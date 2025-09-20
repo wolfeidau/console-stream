@@ -30,15 +30,10 @@ func main() {
 			break
 		}
 
-		streamType := "STDOUT"
-		if part.Stream == consolestream.Stderr {
-			streamType = "STDERR"
-		}
-
 		partCount++
 		totalBytes += len(part.Data)
 		fmt.Printf("Part %d [%s] %s: %d bytes (total: %d bytes, %.2f MB)\n",
-			partCount, streamType, part.Timestamp.Format("15:04:05.000"), len(part.Data), totalBytes, float64(totalBytes)/(1024*1024))
+			partCount, part.Stream.String(), part.Timestamp.Format("15:04:05.000"), len(part.Data), totalBytes, float64(totalBytes)/(1024*1024))
 	}
 
 	fmt.Printf("Burst test completed. Total parts: %d, Total bytes: %d (%.2f MB)\n",

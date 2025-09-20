@@ -187,17 +187,28 @@ func (p *Process) ExecuteAndStream(ctx context.Context) iter.Seq2[StreamPart, er
 	}
 }
 
-type Stream int
+type StreamType int
 
 const (
-	Stdout Stream = iota
+	Stdout StreamType = iota
 	Stderr
 )
+
+func (s StreamType) String() string {
+	switch s {
+	case Stdout:
+		return "STDOUT"
+	case Stderr:
+		return "STDERR"
+	default:
+		return "UNKNOWN"
+	}
+}
 
 type StreamPart struct {
 	Timestamp time.Time
 	Data      []byte
-	Stream    Stream
+	Stream    StreamType
 }
 
 // Cancellor defines the interface for cancelling processes

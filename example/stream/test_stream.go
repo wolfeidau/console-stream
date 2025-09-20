@@ -29,14 +29,9 @@ func main() {
 			break
 		}
 
-		streamType := "STDOUT"
-		if part.Stream == consolestream.Stderr {
-			streamType = "STDERR"
-		}
-
 		partCount++
 		fmt.Printf("Part %d [%s] %s: %d bytes\n%s\n",
-			partCount, streamType, part.Timestamp.Format("15:04:05.000"), len(part.Data), string(part.Data))
+			partCount, part.Stream.String(), part.Timestamp.Format("15:04:05.000"), len(part.Data), string(part.Data))
 	}
 
 	fmt.Printf("Streaming completed. Total parts received: %d\n", partCount)

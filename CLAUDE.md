@@ -41,12 +41,7 @@ func main() {
             break
         }
 
-        streamType := "STDOUT"
-        if part.Stream == 1 { // stderr
-            streamType = "STDERR"
-        }
-
-        fmt.Printf("[%s] %s: %s", streamType, part.Timestamp.Format("15:04:05"), string(part.Data))
+        fmt.Printf("[%s] %s: %s", part.Stream.String(), part.Timestamp.Format("15:04:05"), string(part.Data))
     }
 }
 ```
@@ -85,15 +80,17 @@ type Process struct {
 type StreamPart struct {
     Timestamp time.Time
     Data      []byte
-    Stream    Stream  // Stdout or Stderr
+    Stream    StreamType  // Stdout or Stderr
 }
 
-type Stream int
+type StreamType int
 
 const (
-    Stdout Stream = iota
+    Stdout StreamType = iota
     Stderr
 )
+
+func (s StreamType) String() string
 
 type Cancellor interface {
     Cancel(ctx context.Context, pid int) error

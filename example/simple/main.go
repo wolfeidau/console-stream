@@ -28,12 +28,7 @@ func main() {
 			break
 		}
 
-		streamType := "STDOUT"
-		if part.Stream == consolestream.Stderr {
-			streamType = "STDERR"
-		}
-
-		fmt.Printf("[%s] %s: %s", streamType, part.Timestamp.Format("15:04:05"), string(part.Data))
+		fmt.Printf("[%s] %s: %s", part.Stream.String(), part.Timestamp.Format("15:04:05"), string(part.Data))
 	}
 
 	fmt.Println("Process completed.")

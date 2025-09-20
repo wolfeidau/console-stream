@@ -39,12 +39,7 @@ func main() {
             break
         }
 
-        stream := "STDOUT"
-        if part.Stream == consolestream.Stderr {
-            stream = "STDERR"
-        }
-
-        fmt.Printf("[%s] %s", stream, string(part.Data))
+        fmt.Printf("[%s] %s", part.Stream.String(), string(part.Data))
     }
 }
 ```
