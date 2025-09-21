@@ -1,0 +1,16 @@
+FROM golang:1.25.1@sha256:8305f5fa8ea63c7b5bc85bd223ccc62941f852318ebfbd22f53bbd0b358c07e1
+
+COPY --from=golangci/golangci-lint:v2.4.0@sha256:91460846c43b3de53eb77e968b17363e8747e6f3fc190575b52be60c49446e23 /usr/bin/golangci-lint /usr/local/bin/golangci-lint
+
+# install aws-cli
+RUN --mount=type=cache,target=/var/cache/apt \
+    --mount=type=cache,target=/var/cache/debconf \
+    --mount=type=cache,target=/var/lib/apt \
+    export ARCH=$(uname -m) \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends unzip zip bash jq curl git lsb-release openssh-client \
+    && curl https://awscli.amazonaws.com/awscli-exe-linux-${ARCH}.zip -o /tmp/awscliv2.zip \
+    && unzip -q /tmp/awscliv2.zip -d /opt \
+    && /opt/aws/install --update -i /usr/local/aws-cli -b /usr/local/bin \
+    && rm -rf /tmp/awscliv2.zip /opt/aws \
+    && aws --version
