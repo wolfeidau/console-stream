@@ -127,6 +127,86 @@ ptyProcess := consolestream.NewPTYProcess("top", []string{"-n", "1"},
     consolestream.WithEnvVar("TERM", "xterm-256color"))
 ```
 
+## Recording Sessions (Asciicast v3)
+
+Console Stream supports converting PTY process events into asciicast v3 format for session recording and playback:
+
+```go
+// Record a terminal session to asciicast v3 format
+ptyProcess := consolestream.NewPTYProcess("bash", []string{"-l"})
+
+metadata := consolestream.AscicastV3Metadata{
+    Term: consolestream.TermInfo{Cols: 80, Rows: 24},
+    Command: "bash -l",
+    Title: "Interactive Shell Session",
+}
+
+// Convert events to asciicast format
+eventStream := ptyProcess.ExecuteAndStream(ctx)
+ascicastStream := consolestream.ToAscicastV3(eventStream, metadata)
+
+// Write to file (JSON Lines format)
+file, err := os.Create("session.cast")
+if err != nil {
+    log.Fatal(err)
+}
+defer file.Close()
+
+for line, err := range ascicastStream {
+    if err != nil {
+        log.Printf("Error: %v", err)
+        break
+    }
+
+    data, _ := json.Marshal(line)
+    file.Write(append(data, '\n'))
+}
+
+// Or use the convenience function
+err = consolestream.WriteAscicastV3(eventStream, metadata, func(data []byte) error {
+    _, err := file.Write(data)
+    return err
+})
+```
+
+### Session Recording and Analysis
+Record terminal sessions for debugging, training, or compliance:
+
+```go
+// Record a development session with full metadata
+metadata := consolestream.AscicastV3Metadata{
+    Term: consolestream.TermInfo{Cols: 120, Rows: 30},
+    Command: "npm run build",
+    Title: "Production Build Session",
+    Env: map[string]string{
+        "NODE_ENV": "production",
+        "CI": "true",
+    },
+    Tags: []string{"build", "production", "ci"},
+}
+
+ptyProcess := consolestream.NewPTYProcess("npm", []string{"run", "build"},
+    consolestream.WithEnvVar("NODE_ENV", "production"))
+
+// Record to file for later analysis
+file, _ := os.Create("build-session.cast")
+defer file.Close()
+
+eventStream := ptyProcess.ExecuteAndStream(ctx)
+err := consolestream.WriteAscicastV3(eventStream, metadata, func(data []byte) error {
+    _, err := file.Write(data)
+    return err
+})
+
+// The resulting .cast file can be played with: asciinema play build-session.cast
+```
+
+**Features:**
+- **Standard format**: Compatible with [asciinema](https://asciinema.org/) players and tools
+- **Complete sessions**: Captures output, terminal resizes, and exit codes
+- **Streaming conversion**: Transform events in real-time without buffering entire sessions
+- **Metadata support**: Include command, title, environment variables, and tags
+
 ## Use Cases
 
 ### Build System Integration
@@ -230,28 +310,18 @@ for part, err := range process.ExecuteAndStream(ctx) {
 
 ## How It Works
 
-1. **Process Execution**: Starts your command with separate stdout/stderr pipes
+1. **Process Execution**: Starts your command with separate stdout/stderr pipes or PTY
 2. **Event Generation**: Emits ProcessStart event with PID and command details
-3. **Concurrent Reading**: Background goroutines read from both streams into buffers
-4. **Smart Flushing**: Buffers flush at configurable intervals (default 1 second) OR when they reach configurable size (default 10MB) as PipeOutputData events
+3. **Concurrent Reading**: Background goroutines read output streams into buffers
+4. **Smart Flushing**: Buffers flush at configurable intervals (default 1 second) OR when they reach configurable size (default 10MB)
 5. **Heartbeat Monitoring**: Emits HeartbeatEvent at flush intervals when no output occurs
 6. **Lifecycle Tracking**: Emits ProcessEnd event with exit code, duration, and success status
 7. **Iterator Protocol**: Uses Go 1.23+ `iter.Seq2[Event, error]` for clean event consumption
 8. **Resource Management**: Automatic cleanup of pipes, processes, and goroutines
 
-## What Can Go Wrong?
+## Error Handling
 
 ### Process Failures
-- **Non-zero exit codes**: Wrapped in `ProcessFailedError` with exit code
-- **Killed processes**: Wrapped in `ProcessKilledError` with signal info
-- **Startup failures**: Wrapped in `ProcessStartError` with underlying error
-
-### Resource Management
-- **Context cancellation**: Uses configured `Cancellor` for graceful shutdown
-- **Memory limits**: Configurable buffer limits (default 10MB) prevent runaway memory usage
-- **Goroutine leaks**: Automatic cleanup when context is cancelled or process exits
-
-### Example Error Handling
 ```go
 for part, err := range process.ExecuteAndStream(ctx) {
     if err != nil {
@@ -264,18 +334,13 @@ for part, err := range process.ExecuteAndStream(ctx) {
 
     switch event := part.Event.(type) {
     case *consolestream.PipeOutputData:
-        // Handle normal output
         processOutput(event.Data, event.Stream)
     case *consolestream.ProcessEnd:
         if !event.Success {
             log.Printf("Process failed with exit code %d", event.ExitCode)
         }
-        return // Process completed
-    case *consolestream.ProcessError:
-        log.Printf("Process error: %s", event.Message)
         return
     case *consolestream.HeartbeatEvent:
-        // Monitor for stuck processes
         if event.ElapsedTime > 10*time.Minute {
             log.Printf("Process may be stuck (running for %v)", event.ElapsedTime)
         }
@@ -286,8 +351,6 @@ for part, err := range process.ExecuteAndStream(ctx) {
 ## Extending the Library
 
 ### Custom Cancellation
-Implement the `Cancellor` interface for different execution environments:
-
 ```go
 type DockerCancellor struct {
     containerID string
@@ -297,57 +360,8 @@ func (d *DockerCancellor) Cancel(ctx context.Context, pid int) error {
     return exec.CommandContext(ctx, "docker", "stop", d.containerID).Run()
 }
 
-// Use with processes
 process := consolestream.NewPipeProcess("docker", []string{"run", "..."},
     consolestream.WithCancellor(&DockerCancellor{"my-container"}))
-```
-
-### Event Processing
-Add middleware for filtering, transforming, or analyzing events:
-
-```go
-func FilterPipeOutputEvents(stream iter.Seq2[Event, error]) iter.Seq2[Event, error] {
-    return func(yield func(Event, error) bool) {
-        for part, err := range stream {
-            if err != nil {
-                yield(part, err)
-                return
-            }
-
-            // Only yield PipeOutputData events
-            if _, ok := part.Event.(*consolestream.PipeOutputData); ok {
-                if !yield(part, err) {
-                    return
-                }
-            }
-        }
-    }
-}
-
-func MonitorHeartbeats(stream iter.Seq2[Event, error], threshold time.Duration) iter.Seq2[Event, error] {
-    return func(yield func(Event, error) bool) {
-        for part, err := range stream {
-            if !yield(part, err) {
-                return
-            }
-
-            // Alert on long-running processes
-            if hb, ok := part.Event.(*consolestream.HeartbeatEvent); ok {
-                if hb.ElapsedTime > threshold {
-                    // Could emit custom alert events here
-                    log.Printf("Process running for %v", hb.ElapsedTime)
-                }
-            }
-        }
-    }
-}
-
-// Usage
-filtered := FilterPipeOutputEvents(process.ExecuteAndStream(ctx))
-monitored := MonitorHeartbeats(filtered, 5*time.Minute)
-for part, err := range monitored {
-    // Only output events with heartbeat monitoring
-}
 ```
 
 ## Requirements
