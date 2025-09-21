@@ -1,7 +1,6 @@
 package consolestream
 
 import (
-	"bufio"
 	"context"
 	"fmt"
 	"io"
@@ -173,7 +172,7 @@ func (p *PTYProcess) ExecuteAndStream(ctx context.Context) iter.Seq2[Event, erro
 				return
 
 			case <-ticker.C:
-				// 1-second interval - flush buffers if they have data
+				// configured interval - flush buffers if they have data
 				p.bufferMu.Lock()
 				eventsEmitted := false
 
@@ -275,45 +274,50 @@ func (p *PTYProcess) ExecuteAndStream(ctx context.Context) iter.Seq2[Event, erro
 	}
 }
 
+// ptyBufferWriter wraps buffer operations and implements io.WriteCloser
+type ptyBufferWriter struct {
+	bufferMu      *sync.Mutex
+	buffer        *[]byte
+	flushChan     chan<- struct{}
+	maxBufferSize int
+}
+
+func newPTYBufferWriter(bufferMu *sync.Mutex, buffer *[]byte, flushChan chan<- struct{}, maxBufferSize int) *ptyBufferWriter {
+	return &ptyBufferWriter{
+		bufferMu:      bufferMu,
+		buffer:        buffer,
+		flushChan:     flushChan,
+		maxBufferSize: maxBufferSize,
+	}
+}
+
+func (w *ptyBufferWriter) Write(data []byte) (int, error) {
+	if len(data) == 0 {
+		return 0, nil
+	}
+
+	w.bufferMu.Lock()
+	*w.buffer = append(*w.buffer, data...)
+	if len(*w.buffer) >= w.maxBufferSize {
+		// Trigger immediate flush
+		select {
+		case w.flushChan <- struct{}{}:
+		default:
+		}
+	}
+	w.bufferMu.Unlock()
+
+	return len(data), nil
+}
+
+func (w *ptyBufferWriter) Close() error {
+	return nil
+}
+
 // readPTYStream reads from a PTY and accumulates data in the ptyBuffer field
 func (p *PTYProcess) readPTYStream(ctx context.Context, ptmx *os.File, flushChan chan<- struct{}) {
 	defer p.waiter.Done()
-	reader := bufio.NewReader(ptmx)
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		default:
-		}
-
-		data, err := reader.ReadBytes('\n')
-		if err != nil {
-			if err == io.EOF {
-				// End of stream, add any remaining data
-				if len(data) > 0 {
-					p.bufferMu.Lock()
-					p.ptyBuffer = append(p.ptyBuffer, data...)
-					if len(p.ptyBuffer) >= p.maxBufferSize {
-						select {
-						case flushChan <- struct{}{}:
-						default:
-						}
-					}
-					p.bufferMu.Unlock()
-				}
-			}
-			return
-		}
-
-		p.bufferMu.Lock()
-		p.ptyBuffer = append(p.ptyBuffer, data...)
-		if len(p.ptyBuffer) >= p.maxBufferSize {
-			// Trigger immediate flush
-			select {
-			case flushChan <- struct{}{}:
-			default:
-			}
-		}
-		p.bufferMu.Unlock()
-	}
+	writer := newPTYBufferWriter(&p.bufferMu, &p.ptyBuffer, flushChan, p.maxBufferSize)
+	defer writer.Close()
+	_, _ = io.Copy(writer, ptmx)
 }
