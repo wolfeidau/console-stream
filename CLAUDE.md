@@ -314,6 +314,65 @@ This project uses the following linters and tools:
   go mod tidy
   ```
 
+### Testing Standards
+
+This project uses **testify/require** for all unit tests to ensure clear, readable assertions and proper test failures.
+
+**Required testing dependencies:**
+```bash
+go get github.com/stretchr/testify/require
+```
+
+**Test structure example:**
+```go
+package consolestream
+
+import (
+    "testing"
+    "github.com/stretchr/testify/require"
+)
+
+func TestAscicastV3HeaderGeneration(t *testing.T) {
+    metadata := AscicastV3Metadata{
+        Term: TermInfo{Cols: 80, Rows: 24},
+        Command: "echo test",
+        Title: "Test Session",
+    }
+
+    header := AscicastV3Header{
+        Version: 3,
+        AscicastV3Metadata: metadata,
+    }
+
+    data, err := header.MarshalJSON()
+    require.NoError(t, err)
+    require.Contains(t, string(data), `"version":3`)
+    require.Contains(t, string(data), `"command":"echo test"`)
+    require.Contains(t, string(data), `"cols":80`)
+}
+
+func TestToAscicastV3EventTransformation(t *testing.T) {
+    events := mockEventStream()
+    metadata := AscicastV3Metadata{
+        Term: TermInfo{Cols: 80, Rows: 24},
+    }
+
+    lines := collectLines(ToAscicastV3(events, metadata))
+
+    require.NotEmpty(t, lines)
+    require.Equal(t, 1, countHeaders(lines))
+    require.True(t, hasExitEvent(lines))
+}
+```
+
+**Testing guidelines:**
+- Use `require.NoError(t, err)` instead of manual error checking
+- Use `require.Equal(t, expected, actual)` for exact matches
+- Use `require.Contains(t, haystack, needle)` for substring/element checks
+- Use `require.True(t, condition)` and `require.False(t, condition)` for boolean assertions
+- Use `require.NotEmpty(t, slice)` and `require.Empty(t, slice)` for collection checks
+- Always use `require.*` assertions instead of `assert.*` to fail fast on first assertion failure
+
 ### Building
 
 ```bash

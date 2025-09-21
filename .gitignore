@@ -3,3 +3,4 @@
 /tmp
 /.claude
 .buildkite
+*.cast
