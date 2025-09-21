@@ -227,7 +227,7 @@ func TestToAscicastV3(t *testing.T) {
 		var exitEvent [3]any
 		err = json.Unmarshal(eventData, &exitEvent)
 		require.NoError(t, err)
-		require.Equal(t, 0.2, exitEvent[0]) // 200ms = 0.2s
+		require.Equal(t, 0.1, exitEvent[0]) // 100ms delta from resize event = 0.1s
 		require.Equal(t, "x", exitEvent[1])
 		require.Equal(t, "0", exitEvent[2])
 	})

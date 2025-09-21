@@ -96,8 +96,8 @@ func ToAscicastV3(events iter.Seq2[Event, error], metadata AscicastV3Metadata) i
 			return
 		}
 
-		var sessionStart time.Time
-		sessionStartSet := false
+		var lastEventTime time.Time
+		lastEventTimeSet := false
 
 		for event, err := range events {
 			if err != nil {
@@ -107,14 +107,16 @@ func ToAscicastV3(events iter.Seq2[Event, error], metadata AscicastV3Metadata) i
 				continue
 			}
 
-			// Set session start time from first event
-			if !sessionStartSet {
-				sessionStart = event.Timestamp
-				sessionStartSet = true
+			// Calculate interval from last event (0 for first event)
+			var interval float64
+			if !lastEventTimeSet {
+				interval = 0
+				lastEventTime = event.Timestamp
+				lastEventTimeSet = true
+			} else {
+				interval = event.Timestamp.Sub(lastEventTime).Seconds()
+				lastEventTime = event.Timestamp
 			}
-
-			// Calculate interval from session start
-			interval := event.Timestamp.Sub(sessionStart).Seconds()
 
 			// Transform based on event type
 			switch e := event.Event.(type) {
