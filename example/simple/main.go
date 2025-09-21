@@ -28,8 +28,21 @@ func main() {
 			break
 		}
 
-		fmt.Printf("[%s] %s: %s", part.Stream.String(), part.Timestamp.Format("15:04:05"), string(part.Data))
+		switch part.EventType() {
+		case consolestream.OutputEvent:
+			event := part.Event.(*consolestream.OutputData)
+			fmt.Printf("[%s] %s: %s", event.Stream.String(), part.Timestamp.Format("15:04:05"), string(event.Data))
+		case consolestream.ProcessStartEvent:
+			event := part.Event.(*consolestream.ProcessStart)
+			fmt.Printf("Process started (PID: %d)\n", event.PID)
+		case consolestream.ProcessEndEvent:
+			event := part.Event.(*consolestream.ProcessEnd)
+			fmt.Printf("Process completed (Exit Code: %d, Duration: %v)\n", event.ExitCode, event.Duration)
+		case consolestream.ProcessErrorEvent:
+			event := part.Event.(*consolestream.ProcessError)
+			fmt.Printf("Process error: %s\n", event.Message)
+		case consolestream.HeartbeatEventType:
+			// Silently ignore heartbeats in simple example
+		}
 	}
-
-	fmt.Println("Process completed.")
 }

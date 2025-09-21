@@ -1,14 +1,16 @@
 # Console Stream
 
-**Problem**: You need to execute external processes and consume their output in real-time without blocking, buffering issues, or complex stream management.
+**Problem**: You need to execute external processes and monitor their complete lifecycle in real-time without blocking, buffering issues, or complex event management.
 
-**Solution**: A Go library that streams process output using Go 1.23+ iterators with automatic buffering, timeout handling, and clean resource management.
+**Solution**: A Go library that streams process events using Go 1.23+ iterators with automatic buffering, heartbeat monitoring, and comprehensive lifecycle tracking.
 
 ## What You Get
 
+- **Event-driven architecture**: Process lifecycle events, output data, and heartbeat monitoring
 - **Real-time streaming**: Output delivered in 1-second intervals or 10MB chunks
-- **Clean iteration**: Standard Go `for range` loops over process output
-- **Separate streams**: Stdout and stderr handled independently with timestamps
+- **Keep-alive detection**: Heartbeat events when processes are running but silent
+- **Rich process lifecycle**: Start/end events with PIDs, duration, exit codes
+- **Clean iteration**: Standard Go `for range` loops over all process events
 - **Smart buffering**: Automatic flushing prevents memory issues and ensures responsiveness
 - **Robust cancellation**: Context-aware with pluggable termination strategies
 - **Production ready**: Comprehensive error handling and resource cleanup
@@ -31,15 +33,24 @@ func main() {
     cancellor := consolestream.NewLocalCancellor(5 * time.Second)
     process := consolestream.NewProcess("ping", cancellor, "-c", "5", "google.com")
 
-    // Stream output in real-time
+    // Stream events in real-time
     ctx := context.Background()
     for part, err := range process.ExecuteAndStream(ctx) {
         if err != nil {
-            fmt.Printf("Process error: %v\n", err)
+            fmt.Printf("Stream error: %v\n", err)
             break
         }
 
-        fmt.Printf("[%s] %s", part.Stream.String(), string(part.Data))
+        switch event := part.Event.(type) {
+        case *consolestream.OutputData:
+            fmt.Printf("[%s] %s", event.Stream.String(), string(event.Data))
+        case *consolestream.ProcessStart:
+            fmt.Printf("Process started (PID: %d)\n", event.PID)
+        case *consolestream.ProcessEnd:
+            fmt.Printf("Process completed (Exit: %d, Duration: %v)\n", event.ExitCode, event.Duration)
+        case *consolestream.HeartbeatEvent:
+            fmt.Printf("Process running... (Elapsed: %v)\n", event.ElapsedTime)
+        }
     }
 }
 ```
@@ -47,41 +58,71 @@ func main() {
 ## Use Cases
 
 ### Build System Integration
-Stream compiler output, test results, or deployment logs in real-time without memory buildup:
+Monitor compiler output, test results, or deployment logs with comprehensive lifecycle tracking:
 
 ```go
 process := consolestream.NewProcess("go", cancellor, "test", "-v", "./...")
 for part, err := range process.ExecuteAndStream(ctx) {
-    // Process test output as it happens
-    logTestProgress(part.Data, part.Timestamp)
+    switch event := part.Event.(type) {
+    case *consolestream.OutputData:
+        logTestProgress(event.Data, part.Timestamp)
+    case *consolestream.ProcessEnd:
+        logBuildCompletion(event.ExitCode, event.Duration)
+    case *consolestream.HeartbeatEvent:
+        updateProgressIndicator(event.ElapsedTime)
+    }
 }
 ```
 
 ### Long-Running Process Monitoring
-Monitor services, databases, or data processing jobs:
+Monitor services, databases, or data processing jobs with keep-alive detection:
 
 ```go
 ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 defer cancel()
 
 process := consolestream.NewProcess("docker", cancellor, "logs", "-f", "my-service")
+lastActivity := time.Now()
+
 for part, err := range process.ExecuteAndStream(ctx) {
-    if containsError(part.Data) {
-        alertOnError(part.Data)
+    switch event := part.Event.(type) {
+    case *consolestream.OutputData:
+        lastActivity = part.Timestamp
+        if containsError(event.Data) {
+            alertOnError(event.Data)
+        }
+    case *consolestream.HeartbeatEvent:
+        // Process is alive but silent - check for stalls
+        if time.Since(lastActivity) > 5*time.Minute {
+            alertOnSilentProcess(event.ElapsedTime)
+        }
+    case *consolestream.ProcessEnd:
+        if !event.Success {
+            alertOnProcessFailure(event.ExitCode)
+        }
     }
 }
 ```
 
 ### CI/CD Pipeline Steps
-Execute deployment commands with real-time feedback:
+Execute deployment commands with comprehensive monitoring and real-time feedback:
 
 ```go
 process := consolestream.NewProcess("kubectl", cancellor, "apply", "-f", "deployment.yaml")
 for part, err := range process.ExecuteAndStream(ctx) {
-    updateDeploymentStatus(part.Data)
-    if err != nil {
-        handleDeploymentFailure(err)
-        break
+    switch event := part.Event.(type) {
+    case *consolestream.OutputData:
+        updateDeploymentStatus(event.Data)
+    case *consolestream.ProcessStart:
+        logDeploymentStart(event.PID)
+    case *consolestream.ProcessEnd:
+        if event.Success {
+            logDeploymentSuccess(event.Duration)
+        } else {
+            handleDeploymentFailure(event.ExitCode)
+        }
+    case *consolestream.HeartbeatEvent:
+        showDeploymentProgress(event.ElapsedTime)
     }
 }
 ```
@@ -89,10 +130,13 @@ for part, err := range process.ExecuteAndStream(ctx) {
 ## How It Works
 
 1. **Process Execution**: Starts your command with separate stdout/stderr pipes
-2. **Concurrent Reading**: Background goroutines read from both streams into buffers
-3. **Smart Flushing**: Buffers flush every 1 second OR when they reach 10MB
-4. **Iterator Protocol**: Uses Go 1.23+ `iter.Seq2[StreamPart, error]` for clean consumption
-5. **Resource Management**: Automatic cleanup of pipes, processes, and goroutines
+2. **Event Generation**: Emits ProcessStart event with PID and command details
+3. **Concurrent Reading**: Background goroutines read from both streams into buffers
+4. **Smart Flushing**: Buffers flush every 1 second OR when they reach 10MB as OutputData events
+5. **Heartbeat Monitoring**: Emits HeartbeatEvent every second when no output occurs
+6. **Lifecycle Tracking**: Emits ProcessEnd event with exit code, duration, and success status
+7. **Iterator Protocol**: Uses Go 1.23+ `iter.Seq2[StreamPart, error]` for clean event consumption
+8. **Resource Management**: Automatic cleanup of pipes, processes, and goroutines
 
 ## What Can Go Wrong?
 
@@ -111,16 +155,30 @@ for part, err := range process.ExecuteAndStream(ctx) {
 for part, err := range process.ExecuteAndStream(ctx) {
     if err != nil {
         switch e := err.(type) {
-        case consolestream.ProcessFailedError:
-            log.Printf("Process failed with exit code %d", e.ExitCode)
-        case consolestream.ProcessKilledError:
-            log.Printf("Process killed by signal %s", e.Signal)
         case consolestream.ProcessStartError:
             log.Printf("Failed to start: %v", e.Err)
         }
         break
     }
-    // Handle normal output
+
+    switch event := part.Event.(type) {
+    case *consolestream.OutputData:
+        // Handle normal output
+        processOutput(event.Data, event.Stream)
+    case *consolestream.ProcessEnd:
+        if !event.Success {
+            log.Printf("Process failed with exit code %d", event.ExitCode)
+        }
+        return // Process completed
+    case *consolestream.ProcessError:
+        log.Printf("Process error: %s", event.Message)
+        return
+    case *consolestream.HeartbeatEvent:
+        // Monitor for stuck processes
+        if event.ElapsedTime > 10*time.Minute {
+            log.Printf("Process may be stuck (running for %v)", event.ElapsedTime)
+        }
+    }
 }
 ```
 
@@ -142,14 +200,20 @@ func (d *DockerCancellor) Cancel(ctx context.Context, pid int) error {
 process := consolestream.NewProcess("docker", &DockerCancellor{"my-container"}, "run", "...")
 ```
 
-### Stream Processing
-Add middleware for filtering, transforming, or analyzing output:
+### Event Processing
+Add middleware for filtering, transforming, or analyzing events:
 
 ```go
-func FilterErrors(stream iter.Seq2[StreamPart, error]) iter.Seq2[StreamPart, error] {
+func FilterOutputEvents(stream iter.Seq2[StreamPart, error]) iter.Seq2[StreamPart, error] {
     return func(yield func(StreamPart, error) bool) {
         for part, err := range stream {
-            if err != nil || containsError(part.Data) {
+            if err != nil {
+                yield(part, err)
+                return
+            }
+
+            // Only yield OutputData events
+            if _, ok := part.Event.(*consolestream.OutputData); ok {
                 if !yield(part, err) {
                     return
                 }
@@ -158,10 +222,29 @@ func FilterErrors(stream iter.Seq2[StreamPart, error]) iter.Seq2[StreamPart, err
     }
 }
 
+func MonitorHeartbeats(stream iter.Seq2[StreamPart, error], threshold time.Duration) iter.Seq2[StreamPart, error] {
+    return func(yield func(StreamPart, error) bool) {
+        for part, err := range stream {
+            if !yield(part, err) {
+                return
+            }
+
+            // Alert on long-running processes
+            if hb, ok := part.Event.(*consolestream.HeartbeatEvent); ok {
+                if hb.ElapsedTime > threshold {
+                    // Could emit custom alert events here
+                    log.Printf("Process running for %v", hb.ElapsedTime)
+                }
+            }
+        }
+    }
+}
+
 // Usage
-filtered := FilterErrors(process.ExecuteAndStream(ctx))
-for part, err := range filtered {
-    // Only error output
+filtered := FilterOutputEvents(process.ExecuteAndStream(ctx))
+monitored := MonitorHeartbeats(filtered, 5*time.Minute)
+for part, err := range monitored {
+    // Only output events with heartbeat monitoring
 }
 ```
 
@@ -178,7 +261,7 @@ go get github.com/wolfeidau/console-stream
 
 ## Acknowledgments
 
-This library was developed with the assistance of Claude (Anthropic's AI assistant) through responsible AI collaboration. The design, implementation, and documentation reflect a partnership between human engineering judgment and AI-powered development acceleration.
+This library was developed with the assistance of [Claude](https://claude.ai/) (Anthropic's AI assistant) through responsible AI collaboration. The design, implementation, and documentation reflect a partnership between human engineering judgment and AI-powered development acceleration.
 
 **Human Contributions:**
 - Project requirements and architectural decisions
@@ -196,4 +279,4 @@ This approach demonstrates responsible AI usage in software development - levera
 
 # License
 
-This project is licensed under the MIT License.
+This project is copyright [Mark Wolfe](https://www.wolfe.id.au) and licensed under the [Apache License, Version 2.0](LICENSE).

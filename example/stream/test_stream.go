@@ -23,6 +23,7 @@ func main() {
 	// Execute and stream
 	fmt.Println("Starting streaming test...")
 	partCount := 0
+	outputCount := 0
 	for part, err := range process.ExecuteAndStream(ctx) {
 		if err != nil {
 			log.Printf("Error: %v", err)
@@ -30,9 +31,22 @@ func main() {
 		}
 
 		partCount++
-		fmt.Printf("Part %d [%s] %s: %d bytes\n%s\n",
-			partCount, part.Stream.String(), part.Timestamp.Format("15:04:05.000"), len(part.Data), string(part.Data))
+		switch event := part.Event.(type) {
+		case *consolestream.OutputData:
+			outputCount++
+			fmt.Printf("Part %d [%s] %s: %d bytes\n%s\n",
+				outputCount, event.Stream.String(), part.Timestamp.Format("15:04:05.000"), len(event.Data), string(event.Data))
+		case *consolestream.ProcessStart:
+			fmt.Printf("Event %d: Process started (PID: %d, Command: %s)\n", partCount, event.PID, event.Command)
+		case *consolestream.ProcessEnd:
+			fmt.Printf("Event %d: Process completed (Exit Code: %d, Duration: %v, Success: %t)\n",
+				partCount, event.ExitCode, event.Duration, event.Success)
+		case *consolestream.ProcessError:
+			fmt.Printf("Event %d: Process error: %s\n", partCount, event.Message)
+		case *consolestream.HeartbeatEvent:
+			fmt.Printf("Event %d: Heartbeat (Elapsed: %v)\n", partCount, event.ElapsedTime)
+		}
 	}
 
-	fmt.Printf("Streaming completed. Total parts received: %d\n", partCount)
+	fmt.Printf("Streaming completed. Total events: %d, Output parts: %d\n", partCount, outputCount)
 }

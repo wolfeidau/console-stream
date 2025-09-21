@@ -23,6 +23,7 @@ func main() {
 	// Execute and stream
 	fmt.Println("Starting burst test (15MB)...")
 	partCount := 0
+	outputCount := 0
 	totalBytes := 0
 	for part, err := range process.ExecuteAndStream(ctx) {
 		if err != nil {
@@ -31,11 +32,23 @@ func main() {
 		}
 
 		partCount++
-		totalBytes += len(part.Data)
-		fmt.Printf("Part %d [%s] %s: %d bytes (total: %d bytes, %.2f MB)\n",
-			partCount, part.Stream.String(), part.Timestamp.Format("15:04:05.000"), len(part.Data), totalBytes, float64(totalBytes)/(1024*1024))
+		switch event := part.Event.(type) {
+		case *consolestream.OutputData:
+			outputCount++
+			totalBytes += len(event.Data)
+			fmt.Printf("Part %d [%s] %s: %d bytes (total: %d bytes, %.2f MB)\n",
+				outputCount, event.Stream.String(), part.Timestamp.Format("15:04:05.000"), len(event.Data), totalBytes, float64(totalBytes)/(1024*1024))
+		case *consolestream.ProcessStart:
+			fmt.Printf("Event %d: Process started (PID: %d)\n", partCount, event.PID)
+		case *consolestream.ProcessEnd:
+			fmt.Printf("Event %d: Process completed (Duration: %v)\n", partCount, event.Duration)
+		case *consolestream.ProcessError:
+			fmt.Printf("Event %d: Process error: %s\n", partCount, event.Message)
+		case *consolestream.HeartbeatEvent:
+			// Ignore heartbeats in burst test
+		}
 	}
 
-	fmt.Printf("Burst test completed. Total parts: %d, Total bytes: %d (%.2f MB)\n",
-		partCount, totalBytes, float64(totalBytes)/(1024*1024))
+	fmt.Printf("Burst test completed. Total events: %d, Output parts: %d, Total bytes: %d (%.2f MB)\n",
+		partCount, outputCount, totalBytes, float64(totalBytes)/(1024*1024))
 }
