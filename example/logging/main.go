@@ -15,7 +15,7 @@ func main() {
 	cancellor := consolestream.NewLocalCancellor(5 * time.Second)
 
 	// Create a process that will generate various events
-	process := consolestream.NewProcess("go", cancellor, "run", "cmd/tester/main.go", "--duration=3s", "--stdout-rate=2", "--stderr-rate=1")
+	process := consolestream.NewPipeProcess("go", cancellor, "run", "cmd/tester/main.go", "--duration=3s", "--stdout-rate=2", "--stderr-rate=1")
 
 	// Create context with timeout
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -35,7 +35,7 @@ func main() {
 
 		// Example of uniform handling using EventType()
 		switch part.EventType() {
-		case consolestream.OutputEvent, consolestream.ProcessStartEvent,
+		case consolestream.PipeOutputEvent, consolestream.ProcessStartEvent,
 			consolestream.ProcessEndEvent, consolestream.ProcessErrorEvent:
 			// Log all important events
 			fmt.Printf("Event %d: %s\n", eventCount, part.String())
@@ -49,7 +49,7 @@ func main() {
 	fmt.Printf("\n=== Example 2: JSON Serialization using EventType() ===")
 
 	// Create another process for JSON example
-	process2 := consolestream.NewProcess("echo", cancellor, "JSON example")
+	process2 := consolestream.NewPipeProcess("echo", cancellor, "JSON example")
 
 	for part, err := range process2.ExecuteAndStream(ctx) {
 		if err != nil {
@@ -76,7 +76,7 @@ func main() {
 	fmt.Printf("\n=== Example 3: Event Filtering using EventType() ===")
 
 	// Create another process for filtering example
-	process3 := consolestream.NewProcess("go", cancellor, "run", "cmd/tester/main.go", "--duration=2s", "--stdout-rate=3")
+	process3 := consolestream.NewPipeProcess("go", cancellor, "run", "cmd/tester/main.go", "--duration=2s", "--stdout-rate=3")
 
 	outputEventCount := 0
 	for part, err := range process3.ExecuteAndStream(ctx) {
@@ -85,9 +85,9 @@ func main() {
 		}
 
 		// Only process output events, ignore lifecycle and heartbeats
-		if part.EventType() == consolestream.OutputEvent {
+		if part.EventType() == consolestream.PipeOutputEvent {
 			outputEventCount++
-			event := part.Event.(*consolestream.OutputData)
+			event := part.Event.(*consolestream.PipeOutputData)
 			fmt.Printf("Output %d [%s]: %d bytes\n",
 				outputEventCount, event.Stream.String(), len(event.Data))
 		}

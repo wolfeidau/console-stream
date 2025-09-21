@@ -14,7 +14,7 @@ func main() {
 	cancellor := consolestream.NewLocalCancellor(5 * time.Second)
 
 	// Create a process that will generate a large burst
-	process := consolestream.NewProcess("go", cancellor, "run", "cmd/tester/main.go", "--burst-mb=15")
+	process := consolestream.NewPipeProcess("go", cancellor, "run", "cmd/tester/main.go", "--burst-mb=15")
 
 	// Create context with timeout
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -33,7 +33,7 @@ func main() {
 
 		partCount++
 		switch event := part.Event.(type) {
-		case *consolestream.OutputData:
+		case *consolestream.PipeOutputData:
 			outputCount++
 			totalBytes += len(event.Data)
 			fmt.Printf("Part %d [%s] %s: %d bytes (total: %d bytes, %.2f MB)\n",

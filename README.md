@@ -31,7 +31,7 @@ import (
 func main() {
     // Create process with local cancellation (5s timeout)
     cancellor := consolestream.NewLocalCancellor(5 * time.Second)
-    process := consolestream.NewProcess("ping", cancellor, "-c", "5", "google.com")
+    process := consolestream.NewPipeProcess("ping", cancellor, "-c", "5", "google.com")
 
     // Stream events in real-time
     ctx := context.Background()
@@ -42,7 +42,7 @@ func main() {
         }
 
         switch event := part.Event.(type) {
-        case *consolestream.OutputData:
+        case *consolestream.PipePipeOutputData:
             fmt.Printf("[%s] %s", event.Stream.String(), string(event.Data))
         case *consolestream.ProcessStart:
             fmt.Printf("Process started (PID: %d)\n", event.PID)
@@ -55,16 +55,51 @@ func main() {
 }
 ```
 
+## PTY Support for Interactive Programs
+
+### When to Use PTY vs Regular Processes
+
+**Use PTY (`NewPTYProcess`) when:**
+- Running interactive terminal applications (editors, shells)
+- Capturing programs with progress bars, colors, or ANSI escape sequences
+- Working with CLI tools that detect TTY presence and change behavior
+- Need to preserve terminal formatting and control sequences
+
+**Use Regular Process (`NewPipeProcess`) when:**
+- Simple data pipeline between processes
+- Performance is critical (PTY has slight overhead)
+- You need separate stdout/stderr streams
+
+### PTY Examples
+
+```go
+// Basic PTY usage - preserves colors and formatting
+ptyProcess := consolestream.NewPTYProcess("npm", cancellor, "install")
+for part, err := range ptyProcess.ExecuteAndStream(ctx) {
+    switch event := part.Event.(type) {
+    case *consolestream.PTYPipeOutputData:
+        // Raw terminal output with ANSI escape sequences preserved
+        handleTerminalOutput(event.Data, part.Timestamp)
+    case *consolestream.ProcessEnd:
+        logInstallCompletion(event.ExitCode, event.Duration)
+    }
+}
+
+// PTY with specific terminal size
+size := pty.Winsize{Rows: 24, Cols: 80}
+ptyProcess := consolestream.NewPTYProcessWithSize("top", cancellor, size, "-n", "1")
+```
+
 ## Use Cases
 
 ### Build System Integration
 Monitor compiler output, test results, or deployment logs with comprehensive lifecycle tracking:
 
 ```go
-process := consolestream.NewProcess("go", cancellor, "test", "-v", "./...")
+process := consolestream.NewPipeProcess("go", cancellor, "test", "-v", "./...")
 for part, err := range process.ExecuteAndStream(ctx) {
     switch event := part.Event.(type) {
-    case *consolestream.OutputData:
+    case *consolestream.PipeOutputData:
         logTestProgress(event.Data, part.Timestamp)
     case *consolestream.ProcessEnd:
         logBuildCompletion(event.ExitCode, event.Duration)
@@ -81,12 +116,12 @@ Monitor services, databases, or data processing jobs with keep-alive detection:
 ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 defer cancel()
 
-process := consolestream.NewProcess("docker", cancellor, "logs", "-f", "my-service")
+process := consolestream.NewPipeProcess("docker", cancellor, "logs", "-f", "my-service")
 lastActivity := time.Now()
 
 for part, err := range process.ExecuteAndStream(ctx) {
     switch event := part.Event.(type) {
-    case *consolestream.OutputData:
+    case *consolestream.PipeOutputData:
         lastActivity = part.Timestamp
         if containsError(event.Data) {
             alertOnError(event.Data)
@@ -104,14 +139,40 @@ for part, err := range process.ExecuteAndStream(ctx) {
 }
 ```
 
+### Interactive Terminal Applications
+Monitor CLI tools with progress bars, colors, and interactive elements:
+
+```go
+// Run interactive installer with PTY to capture progress bars and colors
+ptyProcess := consolestream.NewPTYProcess("npm", cancellor, "install", "--progress")
+for part, err := range ptyProcess.ExecuteAndStream(ctx) {
+    switch event := part.Event.(type) {
+    case *consolestream.PTYPipeOutputData:
+        // Output contains ANSI escape sequences for colors and progress bars
+        logInteractiveOutput(event.Data)
+        if containsProgressBar(event.Data) {
+            updateProgressDisplay(event.Data)
+        }
+    case *consolestream.ProcessEnd:
+        if event.Success {
+            logInstallSuccess(event.Duration)
+        } else {
+            handleInstallFailure(event.ExitCode)
+        }
+    case *consolestream.HeartbeatEvent:
+        showInstallProgress(event.ElapsedTime)
+    }
+}
+```
+
 ### CI/CD Pipeline Steps
 Execute deployment commands with comprehensive monitoring and real-time feedback:
 
 ```go
-process := consolestream.NewProcess("kubectl", cancellor, "apply", "-f", "deployment.yaml")
+process := consolestream.NewPipeProcess("kubectl", cancellor, "apply", "-f", "deployment.yaml")
 for part, err := range process.ExecuteAndStream(ctx) {
     switch event := part.Event.(type) {
-    case *consolestream.OutputData:
+    case *consolestream.PipeOutputData:
         updateDeploymentStatus(event.Data)
     case *consolestream.ProcessStart:
         logDeploymentStart(event.PID)
@@ -132,7 +193,7 @@ for part, err := range process.ExecuteAndStream(ctx) {
 1. **Process Execution**: Starts your command with separate stdout/stderr pipes
 2. **Event Generation**: Emits ProcessStart event with PID and command details
 3. **Concurrent Reading**: Background goroutines read from both streams into buffers
-4. **Smart Flushing**: Buffers flush every 1 second OR when they reach 10MB as OutputData events
+4. **Smart Flushing**: Buffers flush every 1 second OR when they reach 10MB as PipeOutputData events
 5. **Heartbeat Monitoring**: Emits HeartbeatEvent every second when no output occurs
 6. **Lifecycle Tracking**: Emits ProcessEnd event with exit code, duration, and success status
 7. **Iterator Protocol**: Uses Go 1.23+ `iter.Seq2[Event, error]` for clean event consumption
@@ -162,7 +223,7 @@ for part, err := range process.ExecuteAndStream(ctx) {
     }
 
     switch event := part.Event.(type) {
-    case *consolestream.OutputData:
+    case *consolestream.PipeOutputData:
         // Handle normal output
         processOutput(event.Data, event.Stream)
     case *consolestream.ProcessEnd:
@@ -197,14 +258,14 @@ func (d *DockerCancellor) Cancel(ctx context.Context, pid int) error {
 }
 
 // Use with processes
-process := consolestream.NewProcess("docker", &DockerCancellor{"my-container"}, "run", "...")
+process := consolestream.NewPipeProcess("docker", &DockerCancellor{"my-container"}, "run", "...")
 ```
 
 ### Event Processing
 Add middleware for filtering, transforming, or analyzing events:
 
 ```go
-func FilterOutputEvents(stream iter.Seq2[Event, error]) iter.Seq2[Event, error] {
+func FilterPipeOutputEvents(stream iter.Seq2[Event, error]) iter.Seq2[Event, error] {
     return func(yield func(Event, error) bool) {
         for part, err := range stream {
             if err != nil {
@@ -212,8 +273,8 @@ func FilterOutputEvents(stream iter.Seq2[Event, error]) iter.Seq2[Event, error] 
                 return
             }
 
-            // Only yield OutputData events
-            if _, ok := part.Event.(*consolestream.OutputData); ok {
+            // Only yield PipeOutputData events
+            if _, ok := part.Event.(*consolestream.PipePipeOutputData); ok {
                 if !yield(part, err) {
                     return
                 }
@@ -241,7 +302,7 @@ func MonitorHeartbeats(stream iter.Seq2[Event, error], threshold time.Duration) 
 }
 
 // Usage
-filtered := FilterOutputEvents(process.ExecuteAndStream(ctx))
+filtered := FilterPipeOutputEvents(process.ExecuteAndStream(ctx))
 monitored := MonitorHeartbeats(filtered, 5*time.Minute)
 for part, err := range monitored {
     // Only output events with heartbeat monitoring
@@ -251,7 +312,8 @@ for part, err := range monitored {
 ## Requirements
 
 - **Go 1.23+** (for iterator support)
-- **Unix-like system** (for signal handling)
+- **Unix-like system** (for signal handling and PTY support)
+- **github.com/creack/pty** (for PTY functionality - automatically included)
 
 ## Installation
 

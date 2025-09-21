@@ -14,7 +14,7 @@ func main() {
 	cancellor := consolestream.NewLocalCancellor(5 * time.Second)
 
 	// Create a process that will echo some text
-	process := consolestream.NewProcess("echo", cancellor, "Hello, World!")
+	process := consolestream.NewPipeProcess("echo", cancellor, "Hello, World!")
 
 	// Create context with timeout
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -29,8 +29,8 @@ func main() {
 		}
 
 		switch part.EventType() {
-		case consolestream.OutputEvent:
-			event := part.Event.(*consolestream.OutputData)
+		case consolestream.PipeOutputEvent:
+			event := part.Event.(*consolestream.PipeOutputData)
 			fmt.Printf("[%s] %s: %s", event.Stream.String(), part.Timestamp.Format("15:04:05"), string(event.Data))
 		case consolestream.ProcessStartEvent:
 			event := part.Event.(*consolestream.ProcessStart)

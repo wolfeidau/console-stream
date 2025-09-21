@@ -7,6 +7,7 @@ A Go library for executing processes and streaming their output in real-time usi
 - **Real-time streaming**: Stream process output in 1-second intervals or when buffers reach 10MB
 - **Iterator interface**: Uses Go 1.23+ `iter.Seq2[Event, error]` for clean consumption
 - **Event-driven architecture**: Process lifecycle events, output data, and heartbeat monitoring
+- **PTY support**: Run processes in pseudo-terminals to capture interactive output, ANSI escape sequences, and progress bars
 - **Pluggable cancellation**: Interface-based cancellation for different execution environments
 - **Buffer management**: Automatic flushing with configurable size limits
 - **Context support**: Full context cancellation with graceful cleanup
@@ -31,7 +32,7 @@ func main() {
     cancellor := consolestream.NewLocalCancellor(5 * time.Second)
 
     // Create a process
-    process := consolestream.NewProcess("echo", cancellor, "Hello, World!")
+    process := consolestream.NewPipeProcess("echo", cancellor, "Hello, World!")
 
     // Execute and stream
     ctx := context.Background()
@@ -42,8 +43,8 @@ func main() {
         }
 
         switch part.EventType() {
-        case consolestream.OutputEvent:
-            event := part.Event.(*consolestream.OutputData)
+        case consolestream.PipeOutputEvent:
+            event := part.Event.(*consolestream.PipeOutputData)
             fmt.Printf("[%s] %s: %s", event.Stream.String(), part.Timestamp.Format("15:04:05"), string(event.Data))
         case consolestream.ProcessStartEvent:
             event := part.Event.(*consolestream.ProcessStart)
@@ -56,11 +57,38 @@ func main() {
 }
 ```
 
+### PTY Example
+
+```go
+// Run process in pseudo-terminal to capture interactive output
+ptyProcess := consolestream.NewPTYProcess("npm", cancellor, "install", "--progress")
+
+for part, err := range ptyProcess.ExecuteAndStream(ctx) {
+    if err != nil {
+        fmt.Printf("Error: %v\n", err)
+        break
+    }
+
+    switch part.EventType() {
+    case consolestream.PTYPipeOutputEvent:
+        event := part.Event.(*consolestream.PTYPipeOutputData)
+        // Raw terminal output with ANSI escape sequences preserved
+        fmt.Printf("[PTY] %s: %q\n", part.Timestamp.Format("15:04:05"), string(event.Data))
+    case consolestream.ProcessStartEvent:
+        event := part.Event.(*consolestream.ProcessStart)
+        fmt.Printf("PTY Process started (PID: %d)\n", event.PID)
+    case consolestream.ProcessEndEvent:
+        event := part.Event.(*consolestream.ProcessEnd)
+        fmt.Printf("PTY Process completed (Exit Code: %d)\n", event.ExitCode)
+    }
+}
+```
+
 ### Streaming Example
 
 ```go
 // Stream a long-running process
-process := consolestream.NewProcess("go", cancellor, "run", "cmd/tester/main.go", "--duration=5s", "--stdout-rate=3")
+process := consolestream.NewPipeProcess("go", cancellor, "run", "cmd/tester/main.go", "--duration=5s", "--stdout-rate=3")
 
 ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 defer cancel()
@@ -72,8 +100,8 @@ for part, err := range process.ExecuteAndStream(ctx) {
     }
 
     switch part.EventType() {
-    case consolestream.OutputEvent:
-        event := part.Event.(*consolestream.OutputData)
+    case consolestream.PipeOutputEvent:
+        event := part.Event.(*consolestream.PipeOutputData)
         fmt.Printf("Received %d bytes from %s at %s\n",
             len(event.Data),
             event.Stream.String(),
@@ -89,9 +117,12 @@ for part, err := range process.ExecuteAndStream(ctx) {
 ### Types
 
 ```go
-type Process struct {
+type PipeProcess struct {
     // Contains filtered or unexported fields
 }
+
+// Process is an alias for PipeProcess (backward compatibility)
+type Process = PipeProcess
 
 type Event struct {
     Timestamp time.Time
@@ -103,7 +134,7 @@ type StreamEvent interface {
     String() string
 }
 
-type OutputData struct {
+type PipeOutputData struct {
     Data   []byte
     Stream StreamType  // Stdout or Stderr
 }
@@ -125,6 +156,21 @@ type HeartbeatEvent struct {
     ElapsedTime  time.Duration
 }
 
+type PTYProcess struct {
+    // Contains filtered or unexported fields
+}
+
+type PTYPipeOutputData struct {
+    Data []byte
+}
+
+type TerminalResizeEvent struct {
+    Rows uint16
+    Cols uint16
+    X    uint16 // Width in pixels
+    Y    uint16 // Height in pixels
+}
+
 type StreamType int
 
 const (
@@ -142,14 +188,26 @@ type Cancellor interface {
 ### Functions
 
 ```go
-// NewProcess creates a new process with the given command, cancellor, and arguments
-func NewProcess(cmd string, cancellor Cancellor, args ...string) *Process
+// NewPipeProcess creates a new pipe process with the given command, cancellor, and arguments
+func NewPipeProcess(cmd string, cancellor Cancellor, args ...string) *PipeProcess
+
+// NewPipeProcess creates a new process (alias for NewPipeProcess - backward compatibility)
+func NewPipeProcess(cmd string, cancellor Cancellor, args ...string) *Process
 
 // NewLocalCancellor creates a cancellor for local processes with SIGTERM/SIGKILL timeout
 func NewLocalCancellor(terminateTimeout time.Duration) *LocalCancellor
 
-// ExecuteAndStream starts the process and returns an iterator over Event objects
-func (p *Process) ExecuteAndStream(ctx context.Context) iter.Seq2[Event, error]
+// ExecuteAndStream starts the pipe process and returns an iterator over Event objects
+func (p *PipeProcess) ExecuteAndStream(ctx context.Context) iter.Seq2[Event, error]
+
+// NewPTYProcess creates a new PTY process with default terminal size
+func NewPTYProcess(cmd string, cancellor Cancellor, args ...string) *PTYProcess
+
+// NewPTYProcessWithSize creates a new PTY process with specified terminal size
+func NewPTYProcessWithSize(cmd string, cancellor Cancellor, size pty.Winsize, args ...string) *PTYProcess
+
+// ExecuteAndStream starts a PTY process and returns an iterator over Event objects
+func (p *PTYProcess) ExecuteAndStream(ctx context.Context) iter.Seq2[Event, error]
 ```
 
 ### Error Types
@@ -269,6 +327,8 @@ See the `example/` directory for usage examples:
 - `example/simple/`: Basic echo example
 - `example/stream/`: Streaming output example
 - `example/burst/`: Large buffer testing
+- `example/pty/`: PTY examples with interactive terminal features
+- `example/logging/`: Event type demonstration and JSON serialization
 
 ## Requirements
 
