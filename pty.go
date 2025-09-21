@@ -53,9 +53,8 @@ type PTYProcess struct {
 	flushInterval time.Duration
 	maxBufferSize int
 
-	// Buffer and its protection
-	bufferMu  sync.Mutex
-	ptyBuffer []byte
+	// Buffer writer for PTY output
+	ptyWriter *BufferWriter
 
 	waiter sync.WaitGroup
 }
@@ -143,6 +142,9 @@ func (p *PTYProcess) ExecuteAndStream(ctx context.Context) iter.Seq2[Event, erro
 		flushChan := make(chan struct{}, 1)
 		doneChan := make(chan error, 1)
 
+		// Initialize buffer writer
+		p.ptyWriter = NewBufferWriter(flushChan, p.maxBufferSize)
+
 		// Start ticker for configurable intervals
 		ticker := time.NewTicker(p.flushInterval)
 		defer ticker.Stop()
@@ -173,17 +175,14 @@ func (p *PTYProcess) ExecuteAndStream(ctx context.Context) iter.Seq2[Event, erro
 
 			case <-ticker.C:
 				// configured interval - flush buffers if they have data
-				p.bufferMu.Lock()
 				eventsEmitted := false
 
-				if len(p.ptyBuffer) > 0 {
+				if data := p.ptyWriter.FlushAndClear(); data != nil {
 					if !yield(newEvent(&PTYOutputData{
-						Data: append([]byte(nil), p.ptyBuffer...),
+						Data: data,
 					}), nil) {
-						p.bufferMu.Unlock()
 						return
 					}
-					p.ptyBuffer = p.ptyBuffer[:0]
 					eventsEmitted = true
 				}
 
@@ -193,49 +192,42 @@ func (p *PTYProcess) ExecuteAndStream(ctx context.Context) iter.Seq2[Event, erro
 						ProcessAlive: true,
 						ElapsedTime:  time.Since(processStart),
 					}), nil) {
-						p.bufferMu.Unlock()
 						return
 					}
 				}
 
 				// Reset heartbeat tracking
 				hasEmittedEventsThisSecond = eventsEmitted
-				p.bufferMu.Unlock()
 
 			case <-flushChan:
 				// Immediate flush due to buffer size limit
-				p.bufferMu.Lock()
-				if len(p.ptyBuffer) >= p.maxBufferSize {
-					if !yield(newEvent(&PTYOutputData{
-						Data: append([]byte(nil), p.ptyBuffer...),
-					}), nil) {
-						p.bufferMu.Unlock()
-						return
+				if p.ptyWriter.Len() >= p.maxBufferSize {
+					if data := p.ptyWriter.FlushAndClear(); data != nil {
+						if !yield(newEvent(&PTYOutputData{
+							Data: data,
+						}), nil) {
+							return
+						}
+						hasEmittedEventsThisSecond = true
 					}
-					p.ptyBuffer = p.ptyBuffer[:0]
-					hasEmittedEventsThisSecond = true
 				}
-				p.bufferMu.Unlock()
 
 			case err := <-doneChan:
 				// Process finished - flush remaining buffers and handle exit
 				endTime := time.Now()
 				duration := endTime.Sub(processStart)
 
-				p.bufferMu.Lock()
-				if len(p.ptyBuffer) > 0 {
+				if data := p.ptyWriter.FlushAndClear(); data != nil {
 					endPart := Event{
 						Timestamp: endTime,
 						Event: &PTYOutputData{
-							Data: append([]byte(nil), p.ptyBuffer...),
+							Data: data,
 						},
 					}
 					if !yield(endPart, nil) {
-						p.bufferMu.Unlock()
 						return
 					}
 				}
-				p.bufferMu.Unlock()
 
 				// Emit ProcessEnd or ProcessError event
 				if err != nil {
@@ -274,50 +266,9 @@ func (p *PTYProcess) ExecuteAndStream(ctx context.Context) iter.Seq2[Event, erro
 	}
 }
 
-// ptyBufferWriter wraps buffer operations and implements io.WriteCloser
-type ptyBufferWriter struct {
-	bufferMu      *sync.Mutex
-	buffer        *[]byte
-	flushChan     chan<- struct{}
-	maxBufferSize int
-}
-
-func newPTYBufferWriter(bufferMu *sync.Mutex, buffer *[]byte, flushChan chan<- struct{}, maxBufferSize int) *ptyBufferWriter {
-	return &ptyBufferWriter{
-		bufferMu:      bufferMu,
-		buffer:        buffer,
-		flushChan:     flushChan,
-		maxBufferSize: maxBufferSize,
-	}
-}
-
-func (w *ptyBufferWriter) Write(data []byte) (int, error) {
-	if len(data) == 0 {
-		return 0, nil
-	}
-
-	w.bufferMu.Lock()
-	*w.buffer = append(*w.buffer, data...)
-	if len(*w.buffer) >= w.maxBufferSize {
-		// Trigger immediate flush
-		select {
-		case w.flushChan <- struct{}{}:
-		default:
-		}
-	}
-	w.bufferMu.Unlock()
-
-	return len(data), nil
-}
-
-func (w *ptyBufferWriter) Close() error {
-	return nil
-}
-
-// readPTYStream reads from a PTY and accumulates data in the ptyBuffer field
+// readPTYStream reads from a PTY and accumulates data using the BufferWriter
 func (p *PTYProcess) readPTYStream(ctx context.Context, ptmx *os.File, flushChan chan<- struct{}) {
 	defer p.waiter.Done()
-	writer := newPTYBufferWriter(&p.bufferMu, &p.ptyBuffer, flushChan, p.maxBufferSize)
-	defer writer.Close()
-	_, _ = io.Copy(writer, ptmx)
+	defer p.ptyWriter.Close()
+	_, _ = io.Copy(p.ptyWriter, ptmx)
 }
