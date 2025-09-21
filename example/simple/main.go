@@ -13,8 +13,8 @@ func main() {
 	// Create a local cancellor with 5 second timeout
 	cancellor := consolestream.NewLocalCancellor(5 * time.Second)
 
-	// Create a process that will echo some text
-	process := consolestream.NewPipeProcess("echo", cancellor, []string{"Hello, World!"})
+	// Create a process that will echo some text using functional options
+	process := consolestream.NewPipeProcess("echo", []string{"Hello, World!"}, consolestream.WithCancellor(cancellor))
 
 	// Create context with timeout
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

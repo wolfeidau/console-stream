@@ -11,18 +11,31 @@ import (
 )
 
 type PipeProcess struct {
-	cmd       string
-	args      []string
-	pid       int
-	cancellor Cancellor
-	mu        sync.Mutex
+	cmd           string
+	args          []string
+	pid           int
+	cancellor     Cancellor
+	env           []string
+	flushInterval time.Duration
+	maxBufferSize int
+	mu            sync.Mutex
 }
 
-func NewPipeProcess(cmd string, cancellor Cancellor, args []string) *PipeProcess {
+func NewPipeProcess(cmd string, args []string, opts ...ProcessOption) *PipeProcess {
+	cfg := &processConfig{}
+	cfg.applyDefaults()
+
+	for _, opt := range opts {
+		opt(cfg)
+	}
+
 	return &PipeProcess{
-		cmd:       cmd,
-		args:      args,
-		cancellor: cancellor,
+		cmd:           cmd,
+		args:          args,
+		cancellor:     cfg.cancellor,
+		env:           cfg.env,
+		flushInterval: cfg.flushInterval,
+		maxBufferSize: cfg.maxBufferSize,
 	}
 }
 
@@ -32,6 +45,9 @@ func (p *PipeProcess) ExecuteAndStream(ctx context.Context) iter.Seq2[Event, err
 		// Create the command
 		// #nosec G204 - Command and args are controlled by the caller
 		cmd := exec.CommandContext(ctx, p.cmd, p.args...)
+		if len(p.env) > 0 {
+			cmd.Env = p.env
+		}
 
 		// Get stdout and stderr pipes
 		stdoutPipe, err := cmd.StdoutPipe()
@@ -79,23 +95,22 @@ func (p *PipeProcess) ExecuteAndStream(ctx context.Context) iter.Seq2[Event, err
 		}
 
 		// Buffer management
-		const maxBufferSize = 10 * 1024 * 1024 // 10MB
 		var stdoutBuffer, stderrBuffer []byte
 
 		// Channels for coordination
 		flushChan := make(chan struct{}, 1)
 		doneChan := make(chan error, 1)
 
-		// Start ticker for 1-second intervals
-		ticker := time.NewTicker(time.Second)
+		// Start ticker for configurable intervals
+		ticker := time.NewTicker(p.flushInterval)
 		defer ticker.Stop()
 
 		// Heartbeat tracking
 		var hasEmittedEventsThisSecond bool
 
 		// Read from stdout and stderr
-		go p.readStream(ctx, stdoutPipe, &stdoutBuffer, flushChan, maxBufferSize)
-		go p.readStream(ctx, stderrPipe, &stderrBuffer, flushChan, maxBufferSize)
+		go p.readStream(ctx, stdoutPipe, &stdoutBuffer, flushChan, p.maxBufferSize)
+		go p.readStream(ctx, stderrPipe, &stderrBuffer, flushChan, p.maxBufferSize)
 
 		// Wait for process completion
 		go func() {
@@ -158,7 +173,7 @@ func (p *PipeProcess) ExecuteAndStream(ctx context.Context) iter.Seq2[Event, err
 			case <-flushChan:
 				// Immediate flush due to buffer size limit
 				p.mu.Lock()
-				if len(stdoutBuffer) >= maxBufferSize {
+				if len(stdoutBuffer) >= p.maxBufferSize {
 					if !yield(newEvent(&PipeOutputData{
 						Data:   append([]byte(nil), stdoutBuffer...),
 						Stream: Stdout,
@@ -169,7 +184,7 @@ func (p *PipeProcess) ExecuteAndStream(ctx context.Context) iter.Seq2[Event, err
 					stdoutBuffer = stdoutBuffer[:0]
 					hasEmittedEventsThisSecond = true
 				}
-				if len(stderrBuffer) >= maxBufferSize {
+				if len(stderrBuffer) >= p.maxBufferSize {
 					if !yield(newEvent(&PipeOutputData{
 						Data:   append([]byte(nil), stderrBuffer...),
 						Stream: Stderr,

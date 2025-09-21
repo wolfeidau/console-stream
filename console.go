@@ -8,6 +8,75 @@ import (
 	"time"
 )
 
+// ProcessOption represents a functional option for configuring processes
+type ProcessOption func(*processConfig)
+
+// processConfig holds configuration options for processes
+type processConfig struct {
+	cancellor     Cancellor
+	env           []string
+	ptySize       any           // Uses any to avoid dependency on pty package
+	flushInterval time.Duration // How often to flush buffers
+	maxBufferSize int           // Maximum buffer size before forced flush
+}
+
+// applyDefaults sets sensible defaults for the process configuration
+func (cfg *processConfig) applyDefaults() {
+	if cfg.cancellor == nil {
+		cfg.cancellor = NewLocalCancellor(5 * time.Second)
+	}
+	if cfg.flushInterval == 0 {
+		cfg.flushInterval = time.Second // Default 1-second flush interval
+	}
+	if cfg.maxBufferSize == 0 {
+		cfg.maxBufferSize = 10 * 1024 * 1024 // Default 10MB buffer limit
+	}
+}
+
+// WithCancellor sets a custom cancellor for the process
+func WithCancellor(cancellor Cancellor) ProcessOption {
+	return func(cfg *processConfig) {
+		cfg.cancellor = cancellor
+	}
+}
+
+// WithEnv sets environment variables as a slice of "KEY=value" strings
+func WithEnv(env []string) ProcessOption {
+	return func(cfg *processConfig) {
+		cfg.env = append(cfg.env, env...)
+	}
+}
+
+// WithEnvVar sets a single environment variable
+func WithEnvVar(key, value string) ProcessOption {
+	return func(cfg *processConfig) {
+		cfg.env = append(cfg.env, key+"="+value)
+	}
+}
+
+// WithEnvMap sets environment variables from a map for convenience
+func WithEnvMap(envMap map[string]string) ProcessOption {
+	return func(cfg *processConfig) {
+		for key, value := range envMap {
+			cfg.env = append(cfg.env, key+"="+value)
+		}
+	}
+}
+
+// WithFlushInterval sets how often to flush output buffers
+func WithFlushInterval(interval time.Duration) ProcessOption {
+	return func(cfg *processConfig) {
+		cfg.flushInterval = interval
+	}
+}
+
+// WithMaxBufferSize sets the maximum buffer size before forcing a flush
+func WithMaxBufferSize(size int) ProcessOption {
+	return func(cfg *processConfig) {
+		cfg.maxBufferSize = size
+	}
+}
+
 type StreamType int
 
 const (

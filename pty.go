@@ -45,31 +45,49 @@ func (t *TerminalResizeEvent) String() string {
 
 // PTYProcess represents a process running in a pseudo-terminal
 type PTYProcess struct {
-	cmd       string
-	args      []string
-	pid       int
-	cancellor Cancellor
-	ptySize   *pty.Winsize
-	mu        sync.Mutex
+	cmd           string
+	args          []string
+	pid           int
+	cancellor     Cancellor
+	env           []string
+	ptySize       *pty.Winsize
+	flushInterval time.Duration
+	maxBufferSize int
+	mu            sync.Mutex
 }
 
-// NewPTYProcess creates a new PTY process with default terminal size
-func NewPTYProcess(cmd string, cancellor Cancellor, args []string) *PTYProcess {
-	return &PTYProcess{
-		cmd:       cmd,
-		args:      args,
-		cancellor: cancellor,
-		ptySize:   nil, // Use default size
+// WithPTYSize sets a custom terminal size for the PTY process
+func WithPTYSize(size pty.Winsize) ProcessOption {
+	return func(cfg *processConfig) {
+		// Store as interface{} to avoid dependency coupling in console.go
+		cfg.ptySize = &size
 	}
 }
 
-// NewPTYProcessWithSize creates a new PTY process with specified terminal size
-func NewPTYProcessWithSize(cmd string, cancellor Cancellor, size pty.Winsize, args []string) *PTYProcess {
+// NewPTYProcess creates a new PTY process with functional options
+func NewPTYProcess(cmd string, args []string, opts ...ProcessOption) *PTYProcess {
+	cfg := &processConfig{}
+	cfg.applyDefaults()
+
+	for _, opt := range opts {
+		opt(cfg)
+	}
+
+	var ptySize *pty.Winsize
+	if cfg.ptySize != nil {
+		if size, ok := cfg.ptySize.(*pty.Winsize); ok {
+			ptySize = size
+		}
+	}
+
 	return &PTYProcess{
-		cmd:       cmd,
-		args:      args,
-		cancellor: cancellor,
-		ptySize:   &size,
+		cmd:           cmd,
+		args:          args,
+		cancellor:     cfg.cancellor,
+		env:           cfg.env,
+		ptySize:       ptySize,
+		flushInterval: cfg.flushInterval,
+		maxBufferSize: cfg.maxBufferSize,
 	}
 }
 
@@ -79,6 +97,9 @@ func (p *PTYProcess) ExecuteAndStream(ctx context.Context) iter.Seq2[Event, erro
 		// Create the command
 		// #nosec G204 - Command and args are controlled by the caller
 		cmd := exec.CommandContext(ctx, p.cmd, p.args...)
+		if len(p.env) > 0 {
+			cmd.Env = p.env
+		}
 
 		// Start the command with PTY
 		var ptmx *os.File
@@ -115,22 +136,21 @@ func (p *PTYProcess) ExecuteAndStream(ctx context.Context) iter.Seq2[Event, erro
 		}
 
 		// Buffer management
-		const maxBufferSize = 10 * 1024 * 1024 // 10MB
 		var ptyBuffer []byte
 
 		// Channels for coordination
 		flushChan := make(chan struct{}, 1)
 		doneChan := make(chan error, 1)
 
-		// Start ticker for 1-second intervals
-		ticker := time.NewTicker(time.Second)
+		// Start ticker for configurable intervals
+		ticker := time.NewTicker(p.flushInterval)
 		defer ticker.Stop()
 
 		// Heartbeat tracking
 		var hasEmittedEventsThisSecond bool
 
 		// Read from PTY
-		go p.readPTYStream(ctx, ptmx, &ptyBuffer, flushChan, maxBufferSize)
+		go p.readPTYStream(ctx, ptmx, &ptyBuffer, flushChan, p.maxBufferSize)
 
 		// Wait for process completion
 		go func() {
@@ -181,7 +201,7 @@ func (p *PTYProcess) ExecuteAndStream(ctx context.Context) iter.Seq2[Event, erro
 			case <-flushChan:
 				// Immediate flush due to buffer size limit
 				p.mu.Lock()
-				if len(ptyBuffer) >= maxBufferSize {
+				if len(ptyBuffer) >= p.maxBufferSize {
 					if !yield(newEvent(&PTYOutputData{
 						Data: append([]byte(nil), ptyBuffer...),
 					}), nil) {

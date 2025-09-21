@@ -14,7 +14,7 @@ func main() {
 	cancellor := consolestream.NewLocalCancellor(5 * time.Second)
 
 	// Create a process that will generate a large burst
-	process := consolestream.NewPipeProcess("go", cancellor, []string{"run", "cmd/tester/main.go", "--burst-mb=15"})
+	process := consolestream.NewPipeProcess("go", []string{"run", "cmd/tester/main.go", "--burst-mb=15"}, consolestream.WithCancellor(cancellor))
 
 	// Create context with timeout
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)

@@ -15,6 +15,61 @@
 - **Robust cancellation**: Context-aware with pluggable termination strategies
 - **Production ready**: Comprehensive error handling and resource cleanup
 
+## Functional Options API
+
+Console Stream uses a functional options pattern for clean, extensible configuration:
+
+```go
+// Default configuration (uses built-in 5-second timeout cancellor)
+process := consolestream.NewPipeProcess("echo", []string{"hello"})
+
+// With custom cancellor
+cancellor := consolestream.NewLocalCancellor(10 * time.Second)
+process := consolestream.NewPipeProcess("echo", []string{"hello"},
+    consolestream.WithCancellor(cancellor))
+
+// With environment variables
+process := consolestream.NewPipeProcess("env", []string{},
+    consolestream.WithEnvVar("MY_VAR", "value"),
+    consolestream.WithEnvMap(map[string]string{
+        "API_KEY": "secret",
+        "DEBUG":   "true",
+    }))
+
+// PTY with terminal size and custom buffering
+size := pty.Winsize{Rows: 24, Cols: 80}
+ptyProcess := consolestream.NewPTYProcess("bash", []string{"-l"},
+    consolestream.WithCancellor(cancellor),
+    consolestream.WithPTYSize(size),
+    consolestream.WithEnvVar("TERM", "xterm-256color"),
+    consolestream.WithFlushInterval(500*time.Millisecond), // Flush every 500ms
+    consolestream.WithMaxBufferSize(5*1024*1024))         // 5MB buffer limit
+```
+
+### Buffer Configuration
+
+Console Stream provides configurable buffering for optimal performance:
+
+- **Default flush interval**: 1 second - output is collected and emitted every second
+- **Default buffer limit**: 10MB - buffers are immediately flushed when they reach this size
+- **Configurable timing**: Adjust flush intervals for faster feedback or better batching
+- **Memory control**: Set buffer limits to prevent memory exhaustion
+
+```go
+// High-frequency updates for interactive applications
+process := consolestream.NewPipeProcess("npm", []string{"install"},
+    consolestream.WithFlushInterval(100*time.Millisecond)) // Flush every 100ms
+
+// Large buffer for batch processing
+process := consolestream.NewPipeProcess("go", []string{"build", "./..."},
+    consolestream.WithMaxBufferSize(50*1024*1024)) // 50MB buffer limit
+
+// Custom configuration for specific needs
+process := consolestream.NewPipeProcess("rsync", []string{"-av", "src/", "dst/"},
+    consolestream.WithFlushInterval(2*time.Second),        // Less frequent updates
+    consolestream.WithMaxBufferSize(1024*1024))           // 1MB buffer limit
+```
+
 ## Quick Start
 
 ```go
@@ -29,9 +84,10 @@ import (
 )
 
 func main() {
-    // Create process with local cancellation (5s timeout)
+    // Create process with functional options for configuration
     cancellor := consolestream.NewLocalCancellor(5 * time.Second)
-    process := consolestream.NewPipeProcess("ping", cancellor, "-c", "5", "google.com")
+    process := consolestream.NewPipeProcess("ping", []string{"-c", "5", "google.com"},
+        consolestream.WithCancellor(cancellor))
 
     // Stream events in real-time
     ctx := context.Background()
@@ -42,7 +98,7 @@ func main() {
         }
 
         switch event := part.Event.(type) {
-        case *consolestream.PipePipeOutputData:
+        case *consolestream.PipeOutputData:
             fmt.Printf("[%s] %s", event.Stream.String(), string(event.Data))
         case *consolestream.ProcessStart:
             fmt.Printf("Process started (PID: %d)\n", event.PID)
@@ -74,10 +130,12 @@ func main() {
 
 ```go
 // Basic PTY usage - preserves colors and formatting
-ptyProcess := consolestream.NewPTYProcess("npm", cancellor, "install")
+cancellor := consolestream.NewLocalCancellor(5 * time.Second)
+ptyProcess := consolestream.NewPTYProcess("npm", []string{"install"},
+    consolestream.WithCancellor(cancellor))
 for part, err := range ptyProcess.ExecuteAndStream(ctx) {
     switch event := part.Event.(type) {
-    case *consolestream.PTYPipeOutputData:
+    case *consolestream.PTYOutputData:
         // Raw terminal output with ANSI escape sequences preserved
         handleTerminalOutput(event.Data, part.Timestamp)
     case *consolestream.ProcessEnd:
@@ -85,9 +143,12 @@ for part, err := range ptyProcess.ExecuteAndStream(ctx) {
     }
 }
 
-// PTY with specific terminal size
+// PTY with specific terminal size and environment variables
 size := pty.Winsize{Rows: 24, Cols: 80}
-ptyProcess := consolestream.NewPTYProcessWithSize("top", cancellor, size, "-n", "1")
+ptyProcess := consolestream.NewPTYProcess("top", []string{"-n", "1"},
+    consolestream.WithCancellor(cancellor),
+    consolestream.WithPTYSize(size),
+    consolestream.WithEnvVar("TERM", "xterm-256color"))
 ```
 
 ## Use Cases
@@ -96,7 +157,10 @@ ptyProcess := consolestream.NewPTYProcessWithSize("top", cancellor, size, "-n", 
 Monitor compiler output, test results, or deployment logs with comprehensive lifecycle tracking:
 
 ```go
-process := consolestream.NewPipeProcess("go", cancellor, "test", "-v", "./...")
+cancellor := consolestream.NewLocalCancellor(10 * time.Second)
+process := consolestream.NewPipeProcess("go", []string{"test", "-v", "./..."},
+    consolestream.WithCancellor(cancellor),
+    consolestream.WithEnvVar("CGO_ENABLED", "0"))
 for part, err := range process.ExecuteAndStream(ctx) {
     switch event := part.Event.(type) {
     case *consolestream.PipeOutputData:
@@ -116,7 +180,8 @@ Monitor services, databases, or data processing jobs with keep-alive detection:
 ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 defer cancel()
 
-process := consolestream.NewPipeProcess("docker", cancellor, "logs", "-f", "my-service")
+process := consolestream.NewPipeProcess("docker", []string{"logs", "-f", "my-service"},
+    consolestream.WithCancellor(cancellor))
 lastActivity := time.Now()
 
 for part, err := range process.ExecuteAndStream(ctx) {
@@ -144,10 +209,11 @@ Monitor CLI tools with progress bars, colors, and interactive elements:
 
 ```go
 // Run interactive installer with PTY to capture progress bars and colors
-ptyProcess := consolestream.NewPTYProcess("npm", cancellor, "install", "--progress")
+ptyProcess := consolestream.NewPTYProcess("npm", []string{"install", "--progress"},
+    consolestream.WithCancellor(cancellor))
 for part, err := range ptyProcess.ExecuteAndStream(ctx) {
     switch event := part.Event.(type) {
-    case *consolestream.PTYPipeOutputData:
+    case *consolestream.PTYOutputData:
         // Output contains ANSI escape sequences for colors and progress bars
         logInteractiveOutput(event.Data)
         if containsProgressBar(event.Data) {
@@ -169,7 +235,8 @@ for part, err := range ptyProcess.ExecuteAndStream(ctx) {
 Execute deployment commands with comprehensive monitoring and real-time feedback:
 
 ```go
-process := consolestream.NewPipeProcess("kubectl", cancellor, "apply", "-f", "deployment.yaml")
+process := consolestream.NewPipeProcess("kubectl", []string{"apply", "-f", "deployment.yaml"},
+    consolestream.WithCancellor(cancellor))
 for part, err := range process.ExecuteAndStream(ctx) {
     switch event := part.Event.(type) {
     case *consolestream.PipeOutputData:
@@ -193,7 +260,7 @@ for part, err := range process.ExecuteAndStream(ctx) {
 1. **Process Execution**: Starts your command with separate stdout/stderr pipes
 2. **Event Generation**: Emits ProcessStart event with PID and command details
 3. **Concurrent Reading**: Background goroutines read from both streams into buffers
-4. **Smart Flushing**: Buffers flush every 1 second OR when they reach 10MB as PipeOutputData events
+4. **Smart Flushing**: Buffers flush at configurable intervals (default 1 second) OR when they reach configurable size (default 10MB) as PipeOutputData events
 5. **Heartbeat Monitoring**: Emits HeartbeatEvent every second when no output occurs
 6. **Lifecycle Tracking**: Emits ProcessEnd event with exit code, duration, and success status
 7. **Iterator Protocol**: Uses Go 1.23+ `iter.Seq2[Event, error]` for clean event consumption
@@ -208,7 +275,7 @@ for part, err := range process.ExecuteAndStream(ctx) {
 
 ### Resource Management
 - **Context cancellation**: Uses configured `Cancellor` for graceful shutdown
-- **Memory limits**: 10MB buffer limit prevents runaway memory usage
+- **Memory limits**: Configurable buffer limits (default 10MB) prevent runaway memory usage
 - **Goroutine leaks**: Automatic cleanup when context is cancelled or process exits
 
 ### Example Error Handling
@@ -258,7 +325,8 @@ func (d *DockerCancellor) Cancel(ctx context.Context, pid int) error {
 }
 
 // Use with processes
-process := consolestream.NewPipeProcess("docker", &DockerCancellor{"my-container"}, "run", "...")
+process := consolestream.NewPipeProcess("docker", []string{"run", "..."},
+    consolestream.WithCancellor(&DockerCancellor{"my-container"}))
 ```
 
 ### Event Processing
@@ -274,7 +342,7 @@ func FilterPipeOutputEvents(stream iter.Seq2[Event, error]) iter.Seq2[Event, err
             }
 
             // Only yield PipeOutputData events
-            if _, ok := part.Event.(*consolestream.PipePipeOutputData); ok {
+            if _, ok := part.Event.(*consolestream.PipeOutputData); ok {
                 if !yield(part, err) {
                     return
                 }
