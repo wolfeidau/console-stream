@@ -54,7 +54,7 @@ type PTYProcess struct {
 }
 
 // NewPTYProcess creates a new PTY process with default terminal size
-func NewPTYProcess(cmd string, cancellor Cancellor, args ...string) *PTYProcess {
+func NewPTYProcess(cmd string, cancellor Cancellor, args []string) *PTYProcess {
 	return &PTYProcess{
 		cmd:       cmd,
 		args:      args,
@@ -64,7 +64,7 @@ func NewPTYProcess(cmd string, cancellor Cancellor, args ...string) *PTYProcess 
 }
 
 // NewPTYProcessWithSize creates a new PTY process with specified terminal size
-func NewPTYProcessWithSize(cmd string, cancellor Cancellor, size pty.Winsize, args ...string) *PTYProcess {
+func NewPTYProcessWithSize(cmd string, cancellor Cancellor, size pty.Winsize, args []string) *PTYProcess {
 	return &PTYProcess{
 		cmd:       cmd,
 		args:      args,

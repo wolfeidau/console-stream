@@ -14,7 +14,7 @@ func main() {
 	cancellor := consolestream.NewLocalCancellor(5 * time.Second)
 
 	// Create a process that will generate output over time
-	process := consolestream.NewPipeProcess("go", cancellor, "run", "cmd/tester/main.go", "--duration=5s", "--stdout-rate=3", "--stderr-rate=2")
+	process := consolestream.NewPipeProcess("go", cancellor, []string{"run", "cmd/tester/main.go", "--duration=5s", "--stdout-rate=3", "--stderr-rate=2"})
 
 	// Create context with timeout
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)

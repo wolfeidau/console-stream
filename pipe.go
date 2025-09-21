@@ -18,7 +18,7 @@ type PipeProcess struct {
 	mu        sync.Mutex
 }
 
-func NewPipeProcess(cmd string, cancellor Cancellor, args ...string) *PipeProcess {
+func NewPipeProcess(cmd string, cancellor Cancellor, args []string) *PipeProcess {
 	return &PipeProcess{
 		cmd:       cmd,
 		args:      args,
