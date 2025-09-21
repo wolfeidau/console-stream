@@ -154,6 +154,7 @@ func (p *PTYProcess) ExecuteAndStream(ctx context.Context) iter.Seq2[Event, erro
 
 		// Wait for process completion
 		go func() {
+			time.Sleep(100 * time.Millisecond) // Small delay to ensure pipes are read
 			doneChan <- cmd.Wait()
 		}()
 

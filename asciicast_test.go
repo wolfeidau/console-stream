@@ -12,6 +12,8 @@ import (
 )
 
 func TestAscicastV3HeaderMarshalJSON(t *testing.T) {
+	t.Parallel()
+
 	t.Run("header with all metadata fields", func(t *testing.T) {
 		timestamp := time.Date(2024, 1, 1, 12, 0, 0, 0, time.UTC)
 		metadata := AscicastV3Metadata{
@@ -90,6 +92,8 @@ func TestAscicastV3HeaderMarshalJSON(t *testing.T) {
 }
 
 func TestAscicastV3EventMarshalJSON(t *testing.T) {
+	t.Parallel()
+
 	t.Run("output event", func(t *testing.T) {
 		event := NewOutputEvent(1.234567, []byte("Hello World!\n"))
 
@@ -152,6 +156,8 @@ func TestAscicastV3EventMarshalJSON(t *testing.T) {
 }
 
 func TestToAscicastV3(t *testing.T) {
+	t.Parallel()
+
 	t.Run("transforms PTY events correctly", func(t *testing.T) {
 		sessionStart := time.Date(2024, 1, 1, 12, 0, 0, 0, time.UTC)
 
@@ -351,6 +357,8 @@ func TestToAscicastV3(t *testing.T) {
 }
 
 func TestWriteAscicastV3(t *testing.T) {
+	t.Parallel()
+
 	t.Run("writes JSON lines format correctly", func(t *testing.T) {
 		sessionStart := time.Date(2024, 1, 1, 12, 0, 0, 0, time.UTC)
 
