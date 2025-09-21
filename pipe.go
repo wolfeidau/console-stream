@@ -18,7 +18,13 @@ type PipeProcess struct {
 	env           []string
 	flushInterval time.Duration
 	maxBufferSize int
-	mu            sync.Mutex
+
+	// Buffers and their protection
+	bufferMu     sync.Mutex
+	stdoutBuffer []byte
+	stderrBuffer []byte
+
+	waiter sync.WaitGroup
 }
 
 func NewPipeProcess(cmd string, args []string, opts ...ProcessOption) *PipeProcess {
@@ -94,9 +100,6 @@ func (p *PipeProcess) ExecuteAndStream(ctx context.Context) iter.Seq2[Event, err
 			return
 		}
 
-		// Buffer management
-		var stdoutBuffer, stderrBuffer []byte
-
 		// Channels for coordination
 		flushChan := make(chan struct{}, 1)
 		doneChan := make(chan error, 1)
@@ -108,12 +111,15 @@ func (p *PipeProcess) ExecuteAndStream(ctx context.Context) iter.Seq2[Event, err
 		// Heartbeat tracking
 		var hasEmittedEventsThisSecond bool
 
+		p.waiter.Add(2)
+
 		// Read from stdout and stderr
-		go p.readStream(ctx, stdoutPipe, &stdoutBuffer, flushChan, p.maxBufferSize)
-		go p.readStream(ctx, stderrPipe, &stderrBuffer, flushChan, p.maxBufferSize)
+		go p.readStream(ctx, stdoutPipe, Stdout, flushChan)
+		go p.readStream(ctx, stderrPipe, Stderr, flushChan)
 
 		// Wait for process completion
 		go func() {
+			p.waiter.Wait()
 			doneChan <- cmd.Wait()
 		}()
 
@@ -129,29 +135,29 @@ func (p *PipeProcess) ExecuteAndStream(ctx context.Context) iter.Seq2[Event, err
 
 			case <-ticker.C:
 				// 1-second interval - flush buffers if they have data
-				p.mu.Lock()
+				p.bufferMu.Lock()
 				eventsEmitted := false
 
-				if len(stdoutBuffer) > 0 {
+				if len(p.stdoutBuffer) > 0 {
 					if !yield(newEvent(&PipeOutputData{
-						Data:   append([]byte(nil), stdoutBuffer...),
+						Data:   append([]byte(nil), p.stdoutBuffer...),
 						Stream: Stdout,
 					}), nil) {
-						p.mu.Unlock()
+						p.bufferMu.Unlock()
 						return
 					}
-					stdoutBuffer = stdoutBuffer[:0]
+					p.stdoutBuffer = p.stdoutBuffer[:0]
 					eventsEmitted = true
 				}
-				if len(stderrBuffer) > 0 {
+				if len(p.stderrBuffer) > 0 {
 					if !yield(newEvent(&PipeOutputData{
-						Data:   append([]byte(nil), stderrBuffer...),
+						Data:   append([]byte(nil), p.stderrBuffer...),
 						Stream: Stderr,
 					}), nil) {
-						p.mu.Unlock()
+						p.bufferMu.Unlock()
 						return
 					}
-					stderrBuffer = stderrBuffer[:0]
+					p.stderrBuffer = p.stderrBuffer[:0]
 					eventsEmitted = true
 				}
 
@@ -161,75 +167,75 @@ func (p *PipeProcess) ExecuteAndStream(ctx context.Context) iter.Seq2[Event, err
 						ProcessAlive: true,
 						ElapsedTime:  time.Since(processStart),
 					}), nil) {
-						p.mu.Unlock()
+						p.bufferMu.Unlock()
 						return
 					}
 				}
 
 				// Reset heartbeat tracking
 				hasEmittedEventsThisSecond = eventsEmitted
-				p.mu.Unlock()
+				p.bufferMu.Unlock()
 
 			case <-flushChan:
 				// Immediate flush due to buffer size limit
-				p.mu.Lock()
-				if len(stdoutBuffer) >= p.maxBufferSize {
+				p.bufferMu.Lock()
+				if len(p.stdoutBuffer) >= p.maxBufferSize {
 					if !yield(newEvent(&PipeOutputData{
-						Data:   append([]byte(nil), stdoutBuffer...),
+						Data:   append([]byte(nil), p.stdoutBuffer...),
 						Stream: Stdout,
 					}), nil) {
-						p.mu.Unlock()
+						p.bufferMu.Unlock()
 						return
 					}
-					stdoutBuffer = stdoutBuffer[:0]
+					p.stdoutBuffer = p.stdoutBuffer[:0]
 					hasEmittedEventsThisSecond = true
 				}
-				if len(stderrBuffer) >= p.maxBufferSize {
+				if len(p.stderrBuffer) >= p.maxBufferSize {
 					if !yield(newEvent(&PipeOutputData{
-						Data:   append([]byte(nil), stderrBuffer...),
+						Data:   append([]byte(nil), p.stderrBuffer...),
 						Stream: Stderr,
 					}), nil) {
-						p.mu.Unlock()
+						p.bufferMu.Unlock()
 						return
 					}
-					stderrBuffer = stderrBuffer[:0]
+					p.stderrBuffer = p.stderrBuffer[:0]
 					hasEmittedEventsThisSecond = true
 				}
-				p.mu.Unlock()
+				p.bufferMu.Unlock()
 
 			case err := <-doneChan:
 				// PipeProcess finished - flush remaining buffers and handle exit
 				endTime := time.Now()
 				duration := endTime.Sub(processStart)
 
-				p.mu.Lock()
-				if len(stdoutBuffer) > 0 {
+				p.bufferMu.Lock()
+				if len(p.stdoutBuffer) > 0 {
 					endPart := Event{
 						Timestamp: endTime,
 						Event: &PipeOutputData{
-							Data:   append([]byte(nil), stdoutBuffer...),
+							Data:   append([]byte(nil), p.stdoutBuffer...),
 							Stream: Stdout,
 						},
 					}
 					if !yield(endPart, nil) {
-						p.mu.Unlock()
+						p.bufferMu.Unlock()
 						return
 					}
 				}
-				if len(stderrBuffer) > 0 {
+				if len(p.stderrBuffer) > 0 {
 					endPart := Event{
 						Timestamp: endTime,
 						Event: &PipeOutputData{
-							Data:   append([]byte(nil), stderrBuffer...),
+							Data:   append([]byte(nil), p.stderrBuffer...),
 							Stream: Stderr,
 						},
 					}
 					if !yield(endPart, nil) {
-						p.mu.Unlock()
+						p.bufferMu.Unlock()
 						return
 					}
 				}
-				p.mu.Unlock()
+				p.bufferMu.Unlock()
 
 				// Emit ProcessEnd or ProcessError event
 				if err != nil {
@@ -268,9 +274,12 @@ func (p *PipeProcess) ExecuteAndStream(ctx context.Context) iter.Seq2[Event, err
 	}
 }
 
-// readStream reads from a pipe and accumulates data in the provided buffer
-func (p *PipeProcess) readStream(ctx context.Context, pipe io.ReadCloser, buffer *[]byte, flushChan chan<- struct{}, maxBufferSize int) {
-	defer pipe.Close()
+// readStream reads from a pipe and accumulates data in the struct buffer fields
+func (p *PipeProcess) readStream(ctx context.Context, pipe io.ReadCloser, streamType StreamType, flushChan chan<- struct{}) {
+	defer func() {
+		pipe.Close()
+		p.waiter.Done()
+	}()
 	reader := bufio.NewReader(pipe)
 	for {
 		select {
@@ -284,29 +293,50 @@ func (p *PipeProcess) readStream(ctx context.Context, pipe io.ReadCloser, buffer
 			if err == io.EOF {
 				// End of stream, add any remaining data
 				if len(data) > 0 {
-					p.mu.Lock()
-					*buffer = append(*buffer, data...)
-					if len(*buffer) >= maxBufferSize {
-						select {
-						case flushChan <- struct{}{}:
-						default:
+					p.bufferMu.Lock()
+					if streamType == Stdout {
+						p.stdoutBuffer = append(p.stdoutBuffer, data...)
+						if len(p.stdoutBuffer) >= p.maxBufferSize {
+							select {
+							case flushChan <- struct{}{}:
+							default:
+							}
+						}
+					} else {
+						p.stderrBuffer = append(p.stderrBuffer, data...)
+						if len(p.stderrBuffer) >= p.maxBufferSize {
+							select {
+							case flushChan <- struct{}{}:
+							default:
+							}
 						}
 					}
-					p.mu.Unlock()
+					p.bufferMu.Unlock()
 				}
 			}
 			return
 		}
 
-		p.mu.Lock()
-		*buffer = append(*buffer, data...)
-		if len(*buffer) >= maxBufferSize {
-			// Trigger immediate flush
-			select {
-			case flushChan <- struct{}{}:
-			default:
+		p.bufferMu.Lock()
+		if streamType == Stdout {
+			p.stdoutBuffer = append(p.stdoutBuffer, data...)
+			if len(p.stdoutBuffer) >= p.maxBufferSize {
+				// Trigger immediate flush
+				select {
+				case flushChan <- struct{}{}:
+				default:
+				}
+			}
+		} else {
+			p.stderrBuffer = append(p.stderrBuffer, data...)
+			if len(p.stderrBuffer) >= p.maxBufferSize {
+				// Trigger immediate flush
+				select {
+				case flushChan <- struct{}{}:
+				default:
+				}
 			}
 		}
-		p.mu.Unlock()
+		p.bufferMu.Unlock()
 	}
 }

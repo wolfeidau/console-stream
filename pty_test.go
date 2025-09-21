@@ -13,6 +13,8 @@ import (
 )
 
 func TestPTYOutputData(t *testing.T) {
+	t.Parallel()
+
 	t.Run("Type returns PTYOutputEvent", func(t *testing.T) {
 		data := &PTYOutputData{Data: []byte("test")}
 		require.Equal(t, PTYOutputEvent, data.Type())
@@ -34,6 +36,8 @@ func TestPTYOutputData(t *testing.T) {
 }
 
 func TestTerminalResizeEvent(t *testing.T) {
+	t.Parallel()
+
 	t.Run("Type returns TerminalResizeEventType", func(t *testing.T) {
 		event := &TerminalResizeEvent{Rows: 24, Cols: 80, X: 800, Y: 600}
 		require.Equal(t, TerminalResizeEventType, event.Type())
@@ -61,6 +65,8 @@ func TestTerminalResizeEvent(t *testing.T) {
 }
 
 func TestWithPTYSize(t *testing.T) {
+	t.Parallel()
+
 	t.Run("sets PTY size in process config", func(t *testing.T) {
 		size := pty.Winsize{Rows: 30, Cols: 120, X: 1200, Y: 900}
 		option := WithPTYSize(size)
@@ -79,6 +85,8 @@ func TestWithPTYSize(t *testing.T) {
 }
 
 func TestNewPTYProcess(t *testing.T) {
+	t.Parallel()
+
 	t.Run("creates PTY process with defaults", func(t *testing.T) {
 		process := NewPTYProcess("echo", []string{"test"})
 
@@ -129,6 +137,8 @@ func TestNewPTYProcess(t *testing.T) {
 }
 
 func TestPTYProcessExecuteAndStream(t *testing.T) {
+	t.Parallel()
+
 	// Skip if PTY is not available on this platform
 	if !isPTYAvailable() {
 		t.Skip("PTY not available on this platform")
@@ -237,7 +247,7 @@ func TestPTYProcessExecuteAndStream(t *testing.T) {
 		// Use a command that produces more output to test buffer flushing
 		// printf with repeated text should produce enough data to trigger buffer limit
 		longText := "this is a very long test message for buffer flushing "
-		process := NewPTYProcess("printf", []string{longText + longText + longText + longText},
+		process := NewPTYProcess("bash", []string{"-c", fmt.Sprintf("for i in {1..100}; do echo '%s'; done; sleep 1", longText)},
 			WithMaxBufferSize(20), // Small buffer that should be exceeded
 		)
 
@@ -385,6 +395,8 @@ func TestPTYProcessExecuteAndStream(t *testing.T) {
 }
 
 func TestPTYProcessConcurrency(t *testing.T) {
+	t.Parallel()
+
 	if !isPTYAvailable() {
 		t.Skip("PTY not available on this platform")
 	}
