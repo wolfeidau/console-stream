@@ -5,8 +5,8 @@ A Go library for executing processes and streaming their output in real-time usi
 ## Features
 
 - **Real-time streaming**: Stream process output in 1-second intervals or when buffers reach 10MB
-- **Iterator interface**: Uses Go 1.23+ `iter.Seq2[StreamPart, error]` for clean consumption
-- **Separate streams**: Stdout and stderr are delivered as separate `StreamPart` objects
+- **Iterator interface**: Uses Go 1.23+ `iter.Seq2[Event, error]` for clean consumption
+- **Event-driven architecture**: Process lifecycle events, output data, and heartbeat monitoring
 - **Pluggable cancellation**: Interface-based cancellation for different execution environments
 - **Buffer management**: Automatic flushing with configurable size limits
 - **Context support**: Full context cancellation with graceful cleanup
@@ -41,7 +41,17 @@ func main() {
             break
         }
 
-        fmt.Printf("[%s] %s: %s", part.Stream.String(), part.Timestamp.Format("15:04:05"), string(part.Data))
+        switch part.EventType() {
+        case consolestream.OutputEvent:
+            event := part.Event.(*consolestream.OutputData)
+            fmt.Printf("[%s] %s: %s", event.Stream.String(), part.Timestamp.Format("15:04:05"), string(event.Data))
+        case consolestream.ProcessStartEvent:
+            event := part.Event.(*consolestream.ProcessStart)
+            fmt.Printf("Process started (PID: %d)\n", event.PID)
+        case consolestream.ProcessEndEvent:
+            event := part.Event.(*consolestream.ProcessEnd)
+            fmt.Printf("Process completed (Exit Code: %d)\n", event.ExitCode)
+        }
     }
 }
 ```
@@ -61,10 +71,16 @@ for part, err := range process.ExecuteAndStream(ctx) {
         break
     }
 
-    fmt.Printf("Received %d bytes from %s at %s\n",
-        len(part.Data),
-        streamName(part.Stream),
-        part.Timestamp.Format("15:04:05.000"))
+    switch part.EventType() {
+    case consolestream.OutputEvent:
+        event := part.Event.(*consolestream.OutputData)
+        fmt.Printf("Received %d bytes from %s at %s\n",
+            len(event.Data),
+            event.Stream.String(),
+            part.Timestamp.Format("15:04:05.000"))
+    case consolestream.HeartbeatEventType:
+        fmt.Printf("Process heartbeat at %s\n", part.Timestamp.Format("15:04:05.000"))
+    }
 }
 ```
 
@@ -77,10 +93,36 @@ type Process struct {
     // Contains filtered or unexported fields
 }
 
-type StreamPart struct {
+type Event struct {
     Timestamp time.Time
-    Data      []byte
-    Stream    StreamType  // Stdout or Stderr
+    Event     StreamEvent
+}
+
+type StreamEvent interface {
+    Type() EventType
+    String() string
+}
+
+type OutputData struct {
+    Data   []byte
+    Stream StreamType  // Stdout or Stderr
+}
+
+type ProcessStart struct {
+    PID     int
+    Command string
+    Args    []string
+}
+
+type ProcessEnd struct {
+    ExitCode int
+    Duration time.Duration
+    Success  bool
+}
+
+type HeartbeatEvent struct {
+    ProcessAlive bool
+    ElapsedTime  time.Duration
 }
 
 type StreamType int
@@ -106,8 +148,8 @@ func NewProcess(cmd string, cancellor Cancellor, args ...string) *Process
 // NewLocalCancellor creates a cancellor for local processes with SIGTERM/SIGKILL timeout
 func NewLocalCancellor(terminateTimeout time.Duration) *LocalCancellor
 
-// ExecuteAndStream starts the process and returns an iterator over StreamPart objects
-func (p *Process) ExecuteAndStream(ctx context.Context) iter.Seq2[StreamPart, error]
+// ExecuteAndStream starts the process and returns an iterator over Event objects
+func (p *Process) ExecuteAndStream(ctx context.Context) iter.Seq2[Event, error]
 ```
 
 ### Error Types
@@ -142,7 +184,7 @@ type ProcessKilledError struct {
 
 1. Process starts and PID is stored
 2. Stdout/stderr are read concurrently into separate buffers
-3. StreamParts are yielded based on time/size triggers
+3. Events are yielded based on time/size triggers and process lifecycle
 4. On context cancellation, the configured Cancellor is used
 5. Process exit is handled with appropriate error types
 
@@ -165,6 +207,17 @@ go run cmd/tester/main.go --duration=2s --exit-code=1
 ```
 
 ## Development
+
+### Breaking Changes Policy
+
+**Pre-1.0 Development**: This library is currently in pre-1.0 development phase, which means:
+
+- **Breaking changes are acceptable** and expected as the API evolves
+- **All breaking changes must be clearly documented** in commit messages and release notes
+- **Major API changes should be discussed** before implementation when possible
+- **Semantic versioning** will be followed: breaking changes increment the minor version (0.x.0)
+
+**Post-1.0 Promise**: Once version 1.0 is released, breaking changes will follow semantic versioning (major version increments) and include migration guides.
 
 ### Documentation Style
 

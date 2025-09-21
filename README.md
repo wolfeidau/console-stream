@@ -135,7 +135,7 @@ for part, err := range process.ExecuteAndStream(ctx) {
 4. **Smart Flushing**: Buffers flush every 1 second OR when they reach 10MB as OutputData events
 5. **Heartbeat Monitoring**: Emits HeartbeatEvent every second when no output occurs
 6. **Lifecycle Tracking**: Emits ProcessEnd event with exit code, duration, and success status
-7. **Iterator Protocol**: Uses Go 1.23+ `iter.Seq2[StreamPart, error]` for clean event consumption
+7. **Iterator Protocol**: Uses Go 1.23+ `iter.Seq2[Event, error]` for clean event consumption
 8. **Resource Management**: Automatic cleanup of pipes, processes, and goroutines
 
 ## What Can Go Wrong?
@@ -204,8 +204,8 @@ process := consolestream.NewProcess("docker", &DockerCancellor{"my-container"}, 
 Add middleware for filtering, transforming, or analyzing events:
 
 ```go
-func FilterOutputEvents(stream iter.Seq2[StreamPart, error]) iter.Seq2[StreamPart, error] {
-    return func(yield func(StreamPart, error) bool) {
+func FilterOutputEvents(stream iter.Seq2[Event, error]) iter.Seq2[Event, error] {
+    return func(yield func(Event, error) bool) {
         for part, err := range stream {
             if err != nil {
                 yield(part, err)
@@ -222,8 +222,8 @@ func FilterOutputEvents(stream iter.Seq2[StreamPart, error]) iter.Seq2[StreamPar
     }
 }
 
-func MonitorHeartbeats(stream iter.Seq2[StreamPart, error], threshold time.Duration) iter.Seq2[StreamPart, error] {
-    return func(yield func(StreamPart, error) bool) {
+func MonitorHeartbeats(stream iter.Seq2[Event, error], threshold time.Duration) iter.Seq2[Event, error] {
+    return func(yield func(Event, error) bool) {
         for part, err := range stream {
             if !yield(part, err) {
                 return

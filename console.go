@@ -29,9 +29,9 @@ func NewProcess(cmd string, cancellor Cancellor, args ...string) *Process {
 	}
 }
 
-// ExecuteAndStream starts a process and returns an iterator over StreamPart objects
-func (p *Process) ExecuteAndStream(ctx context.Context) iter.Seq2[StreamPart, error] {
-	return func(yield func(StreamPart, error) bool) {
+// ExecuteAndStream starts a process and returns an iterator over Event objects
+func (p *Process) ExecuteAndStream(ctx context.Context) iter.Seq2[Event, error] {
+	return func(yield func(Event, error) bool) {
 		// Create the command
 		// #nosec G204 - Command and args are controlled by the caller
 		cmd := exec.CommandContext(ctx, p.cmd, p.args...)
@@ -39,7 +39,7 @@ func (p *Process) ExecuteAndStream(ctx context.Context) iter.Seq2[StreamPart, er
 		// Get stdout and stderr pipes
 		stdoutPipe, err := cmd.StdoutPipe()
 		if err != nil {
-			yield(newStreamPart(&ProcessError{
+			yield(newEvent(&ProcessError{
 				Error:   err,
 				Message: "Failed to create stdout pipe",
 			}), ProcessStartError{Cmd: p.cmd, Err: err})
@@ -48,7 +48,7 @@ func (p *Process) ExecuteAndStream(ctx context.Context) iter.Seq2[StreamPart, er
 
 		stderrPipe, err := cmd.StderrPipe()
 		if err != nil {
-			yield(newStreamPart(&ProcessError{
+			yield(newEvent(&ProcessError{
 				Error:   err,
 				Message: "Failed to create stderr pipe",
 			}), ProcessStartError{Cmd: p.cmd, Err: err})
@@ -57,7 +57,7 @@ func (p *Process) ExecuteAndStream(ctx context.Context) iter.Seq2[StreamPart, er
 
 		// Start the command
 		if err := cmd.Start(); err != nil {
-			yield(newStreamPart(&ProcessError{
+			yield(newEvent(&ProcessError{
 				Error:   err,
 				Message: "Failed to start process",
 			}), ProcessStartError{Cmd: p.cmd, Err: err})
@@ -69,7 +69,7 @@ func (p *Process) ExecuteAndStream(ctx context.Context) iter.Seq2[StreamPart, er
 		processStart := time.Now()
 
 		// Emit ProcessStart event
-		processStartPart := StreamPart{
+		processStartEvent := Event{
 			Timestamp: processStart,
 			Event: &ProcessStart{
 				PID:     p.pid,
@@ -77,7 +77,7 @@ func (p *Process) ExecuteAndStream(ctx context.Context) iter.Seq2[StreamPart, er
 				Args:    p.args,
 			},
 		}
-		if !yield(processStartPart, nil) {
+		if !yield(processStartEvent, nil) {
 			return
 		}
 
@@ -121,7 +121,7 @@ func (p *Process) ExecuteAndStream(ctx context.Context) iter.Seq2[StreamPart, er
 				eventsEmitted := false
 
 				if len(stdoutBuffer) > 0 {
-					if !yield(newStreamPart(&OutputData{
+					if !yield(newEvent(&OutputData{
 						Data:   append([]byte(nil), stdoutBuffer...),
 						Stream: Stdout,
 					}), nil) {
@@ -132,7 +132,7 @@ func (p *Process) ExecuteAndStream(ctx context.Context) iter.Seq2[StreamPart, er
 					eventsEmitted = true
 				}
 				if len(stderrBuffer) > 0 {
-					if !yield(newStreamPart(&OutputData{
+					if !yield(newEvent(&OutputData{
 						Data:   append([]byte(nil), stderrBuffer...),
 						Stream: Stderr,
 					}), nil) {
@@ -145,7 +145,7 @@ func (p *Process) ExecuteAndStream(ctx context.Context) iter.Seq2[StreamPart, er
 
 				// Emit heartbeat if no events were emitted this second
 				if !hasEmittedEventsThisSecond && !eventsEmitted {
-					if !yield(newStreamPart(&HeartbeatEvent{
+					if !yield(newEvent(&HeartbeatEvent{
 						ProcessAlive: true,
 						ElapsedTime:  time.Since(processStart),
 					}), nil) {
@@ -162,7 +162,7 @@ func (p *Process) ExecuteAndStream(ctx context.Context) iter.Seq2[StreamPart, er
 				// Immediate flush due to buffer size limit
 				p.mu.Lock()
 				if len(stdoutBuffer) >= maxBufferSize {
-					if !yield(newStreamPart(&OutputData{
+					if !yield(newEvent(&OutputData{
 						Data:   append([]byte(nil), stdoutBuffer...),
 						Stream: Stdout,
 					}), nil) {
@@ -173,7 +173,7 @@ func (p *Process) ExecuteAndStream(ctx context.Context) iter.Seq2[StreamPart, er
 					hasEmittedEventsThisSecond = true
 				}
 				if len(stderrBuffer) >= maxBufferSize {
-					if !yield(newStreamPart(&OutputData{
+					if !yield(newEvent(&OutputData{
 						Data:   append([]byte(nil), stderrBuffer...),
 						Stream: Stderr,
 					}), nil) {
@@ -192,7 +192,7 @@ func (p *Process) ExecuteAndStream(ctx context.Context) iter.Seq2[StreamPart, er
 
 				p.mu.Lock()
 				if len(stdoutBuffer) > 0 {
-					endPart := StreamPart{
+					endPart := Event{
 						Timestamp: endTime,
 						Event: &OutputData{
 							Data:   append([]byte(nil), stdoutBuffer...),
@@ -205,7 +205,7 @@ func (p *Process) ExecuteAndStream(ctx context.Context) iter.Seq2[StreamPart, er
 					}
 				}
 				if len(stderrBuffer) > 0 {
-					endPart := StreamPart{
+					endPart := Event{
 						Timestamp: endTime,
 						Event: &OutputData{
 							Data:   append([]byte(nil), stderrBuffer...),
@@ -222,7 +222,7 @@ func (p *Process) ExecuteAndStream(ctx context.Context) iter.Seq2[StreamPart, er
 				// Emit ProcessEnd or ProcessError event
 				if err != nil {
 					if exitError, ok := err.(*exec.ExitError); ok {
-						yield(StreamPart{
+						yield(Event{
 							Timestamp: endTime,
 							Event: &ProcessEnd{
 								ExitCode: exitError.ExitCode(),
@@ -231,7 +231,7 @@ func (p *Process) ExecuteAndStream(ctx context.Context) iter.Seq2[StreamPart, er
 							},
 						}, nil)
 					} else {
-						yield(StreamPart{
+						yield(Event{
 							Timestamp: endTime,
 							Event: &ProcessError{
 								Error:   err,
@@ -241,7 +241,7 @@ func (p *Process) ExecuteAndStream(ctx context.Context) iter.Seq2[StreamPart, er
 					}
 				} else {
 					// Process completed successfully
-					yield(StreamPart{
+					yield(Event{
 						Timestamp: endTime,
 						Event: &ProcessEnd{
 							ExitCode: 0,
@@ -308,19 +308,19 @@ func (e EventType) String() string {
 	}
 }
 
-type StreamPart struct {
+type Event struct {
 	Timestamp time.Time
 	Event     StreamEvent
 }
 
-// EventType returns the type of the event contained in this StreamPart
-func (s StreamPart) EventType() EventType {
-	return s.Event.Type()
+// EventType returns the type of the event contained in this Event
+func (e Event) EventType() EventType {
+	return e.Event.Type()
 }
 
-// String returns a human-readable representation of the StreamPart
-func (s StreamPart) String() string {
-	return fmt.Sprintf("[%s] %s: %s", s.EventType().String(), s.Timestamp.Format("15:04:05.000"), s.Event.String())
+// String returns a human-readable representation of the Event
+func (e Event) String() string {
+	return fmt.Sprintf("[%s] %s: %s", e.EventType().String(), e.Timestamp.Format("15:04:05.000"), e.Event.String())
 }
 
 // OutputData represents stdout/stderr data from the process
@@ -425,9 +425,9 @@ func IsProcessLifecycleEvent(event StreamEvent) bool {
 	return eventType == ProcessStartEvent || eventType == ProcessEndEvent || eventType == ProcessErrorEvent
 }
 
-// Helper function to create StreamPart with event and timestamp
-func newStreamPart(event StreamEvent) StreamPart {
-	return StreamPart{
+// Helper function to create Event with event and timestamp
+func newEvent(event StreamEvent) Event {
+	return Event{
 		Timestamp: time.Now(),
 		Event:     event,
 	}
