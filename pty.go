@@ -53,7 +53,10 @@ type PTYProcess struct {
 	ptySize       *pty.Winsize
 	flushInterval time.Duration
 	maxBufferSize int
-	mu            sync.Mutex
+
+	// Buffer and its protection
+	bufferMu  sync.Mutex
+	ptyBuffer []byte
 }
 
 // WithPTYSize sets a custom terminal size for the PTY process
@@ -135,9 +138,6 @@ func (p *PTYProcess) ExecuteAndStream(ctx context.Context) iter.Seq2[Event, erro
 			return
 		}
 
-		// Buffer management
-		var ptyBuffer []byte
-
 		// Channels for coordination
 		flushChan := make(chan struct{}, 1)
 		doneChan := make(chan error, 1)
@@ -150,7 +150,7 @@ func (p *PTYProcess) ExecuteAndStream(ctx context.Context) iter.Seq2[Event, erro
 		var hasEmittedEventsThisSecond bool
 
 		// Read from PTY
-		go p.readPTYStream(ctx, ptmx, &ptyBuffer, flushChan, p.maxBufferSize)
+		go p.readPTYStream(ctx, ptmx, flushChan)
 
 		// Wait for process completion
 		go func() {
@@ -169,17 +169,17 @@ func (p *PTYProcess) ExecuteAndStream(ctx context.Context) iter.Seq2[Event, erro
 
 			case <-ticker.C:
 				// 1-second interval - flush buffers if they have data
-				p.mu.Lock()
+				p.bufferMu.Lock()
 				eventsEmitted := false
 
-				if len(ptyBuffer) > 0 {
+				if len(p.ptyBuffer) > 0 {
 					if !yield(newEvent(&PTYOutputData{
-						Data: append([]byte(nil), ptyBuffer...),
+						Data: append([]byte(nil), p.ptyBuffer...),
 					}), nil) {
-						p.mu.Unlock()
+						p.bufferMu.Unlock()
 						return
 					}
-					ptyBuffer = ptyBuffer[:0]
+					p.ptyBuffer = p.ptyBuffer[:0]
 					eventsEmitted = true
 				}
 
@@ -189,49 +189,49 @@ func (p *PTYProcess) ExecuteAndStream(ctx context.Context) iter.Seq2[Event, erro
 						ProcessAlive: true,
 						ElapsedTime:  time.Since(processStart),
 					}), nil) {
-						p.mu.Unlock()
+						p.bufferMu.Unlock()
 						return
 					}
 				}
 
 				// Reset heartbeat tracking
 				hasEmittedEventsThisSecond = eventsEmitted
-				p.mu.Unlock()
+				p.bufferMu.Unlock()
 
 			case <-flushChan:
 				// Immediate flush due to buffer size limit
-				p.mu.Lock()
-				if len(ptyBuffer) >= p.maxBufferSize {
+				p.bufferMu.Lock()
+				if len(p.ptyBuffer) >= p.maxBufferSize {
 					if !yield(newEvent(&PTYOutputData{
-						Data: append([]byte(nil), ptyBuffer...),
+						Data: append([]byte(nil), p.ptyBuffer...),
 					}), nil) {
-						p.mu.Unlock()
+						p.bufferMu.Unlock()
 						return
 					}
-					ptyBuffer = ptyBuffer[:0]
+					p.ptyBuffer = p.ptyBuffer[:0]
 					hasEmittedEventsThisSecond = true
 				}
-				p.mu.Unlock()
+				p.bufferMu.Unlock()
 
 			case err := <-doneChan:
 				// Process finished - flush remaining buffers and handle exit
 				endTime := time.Now()
 				duration := endTime.Sub(processStart)
 
-				p.mu.Lock()
-				if len(ptyBuffer) > 0 {
+				p.bufferMu.Lock()
+				if len(p.ptyBuffer) > 0 {
 					endPart := Event{
 						Timestamp: endTime,
 						Event: &PTYOutputData{
-							Data: append([]byte(nil), ptyBuffer...),
+							Data: append([]byte(nil), p.ptyBuffer...),
 						},
 					}
 					if !yield(endPart, nil) {
-						p.mu.Unlock()
+						p.bufferMu.Unlock()
 						return
 					}
 				}
-				p.mu.Unlock()
+				p.bufferMu.Unlock()
 
 				// Emit ProcessEnd or ProcessError event
 				if err != nil {
@@ -270,8 +270,8 @@ func (p *PTYProcess) ExecuteAndStream(ctx context.Context) iter.Seq2[Event, erro
 	}
 }
 
-// readPTYStream reads from a PTY and accumulates data in the provided buffer
-func (p *PTYProcess) readPTYStream(ctx context.Context, ptmx *os.File, buffer *[]byte, flushChan chan<- struct{}, maxBufferSize int) {
+// readPTYStream reads from a PTY and accumulates data in the ptyBuffer field
+func (p *PTYProcess) readPTYStream(ctx context.Context, ptmx *os.File, flushChan chan<- struct{}) {
 	reader := bufio.NewReader(ptmx)
 	for {
 		select {
@@ -285,29 +285,29 @@ func (p *PTYProcess) readPTYStream(ctx context.Context, ptmx *os.File, buffer *[
 			if err == io.EOF {
 				// End of stream, add any remaining data
 				if len(data) > 0 {
-					p.mu.Lock()
-					*buffer = append(*buffer, data...)
-					if len(*buffer) >= maxBufferSize {
+					p.bufferMu.Lock()
+					p.ptyBuffer = append(p.ptyBuffer, data...)
+					if len(p.ptyBuffer) >= p.maxBufferSize {
 						select {
 						case flushChan <- struct{}{}:
 						default:
 						}
 					}
-					p.mu.Unlock()
+					p.bufferMu.Unlock()
 				}
 			}
 			return
 		}
 
-		p.mu.Lock()
-		*buffer = append(*buffer, data...)
-		if len(*buffer) >= maxBufferSize {
+		p.bufferMu.Lock()
+		p.ptyBuffer = append(p.ptyBuffer, data...)
+		if len(p.ptyBuffer) >= p.maxBufferSize {
 			// Trigger immediate flush
 			select {
 			case flushChan <- struct{}{}:
 			default:
 			}
 		}
-		p.mu.Unlock()
+		p.bufferMu.Unlock()
 	}
 }
