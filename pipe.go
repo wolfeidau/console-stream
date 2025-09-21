@@ -23,6 +23,8 @@ type PipeProcess struct {
 	bufferMu     sync.Mutex
 	stdoutBuffer []byte
 	stderrBuffer []byte
+
+	waiter sync.WaitGroup
 }
 
 func NewPipeProcess(cmd string, args []string, opts ...ProcessOption) *PipeProcess {
@@ -109,13 +111,15 @@ func (p *PipeProcess) ExecuteAndStream(ctx context.Context) iter.Seq2[Event, err
 		// Heartbeat tracking
 		var hasEmittedEventsThisSecond bool
 
+		p.waiter.Add(2)
+
 		// Read from stdout and stderr
 		go p.readStream(ctx, stdoutPipe, Stdout, flushChan)
 		go p.readStream(ctx, stderrPipe, Stderr, flushChan)
 
 		// Wait for process completion
 		go func() {
-			time.Sleep(100 * time.Millisecond) // Small delay to ensure pipes are read
+			p.waiter.Wait()
 			doneChan <- cmd.Wait()
 		}()
 
@@ -272,7 +276,10 @@ func (p *PipeProcess) ExecuteAndStream(ctx context.Context) iter.Seq2[Event, err
 
 // readStream reads from a pipe and accumulates data in the struct buffer fields
 func (p *PipeProcess) readStream(ctx context.Context, pipe io.ReadCloser, streamType StreamType, flushChan chan<- struct{}) {
-	defer pipe.Close()
+	defer func() {
+		pipe.Close()
+		p.waiter.Done()
+	}()
 	reader := bufio.NewReader(pipe)
 	for {
 		select {

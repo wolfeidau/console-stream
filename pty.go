@@ -57,6 +57,8 @@ type PTYProcess struct {
 	// Buffer and its protection
 	bufferMu  sync.Mutex
 	ptyBuffer []byte
+
+	waiter sync.WaitGroup
 }
 
 // WithPTYSize sets a custom terminal size for the PTY process
@@ -149,12 +151,14 @@ func (p *PTYProcess) ExecuteAndStream(ctx context.Context) iter.Seq2[Event, erro
 		// Heartbeat tracking
 		var hasEmittedEventsThisSecond bool
 
+		p.waiter.Add(1)
+
 		// Read from PTY
 		go p.readPTYStream(ctx, ptmx, flushChan)
 
 		// Wait for process completion
 		go func() {
-			time.Sleep(100 * time.Millisecond) // Small delay to ensure pipes are read
+			p.waiter.Wait()
 			doneChan <- cmd.Wait()
 		}()
 
@@ -273,6 +277,7 @@ func (p *PTYProcess) ExecuteAndStream(ctx context.Context) iter.Seq2[Event, erro
 
 // readPTYStream reads from a PTY and accumulates data in the ptyBuffer field
 func (p *PTYProcess) readPTYStream(ctx context.Context, ptmx *os.File, flushChan chan<- struct{}) {
+	defer p.waiter.Done()
 	reader := bufio.NewReader(ptmx)
 	for {
 		select {
