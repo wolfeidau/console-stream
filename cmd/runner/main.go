@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"iter"
+	"log/slog"
 	"os"
 	"strings"
 	"time"
@@ -35,6 +36,37 @@ type ExecFlags struct {
 	Format  string
 	Output  string
 	Timeout string
+	Verbose bool
+	Quiet   bool
+}
+
+// ExecutionStats tracks metrics during execution
+type ExecutionStats struct {
+	StartTime   time.Time
+	EventCount  int
+	ErrorCount  int
+	OutputBytes int64
+	ExitCode    *int
+	Duration    time.Duration
+}
+
+// setupLogger initializes the pretty log handler based on flags
+func setupLogger(verbose, quiet bool) *slog.Logger {
+	var level slog.Level
+	switch {
+	case quiet:
+		level = slog.LevelError
+	case verbose:
+		level = slog.LevelDebug
+	default:
+		level = slog.LevelInfo
+	}
+
+	handler := NewHandler(&slog.HandlerOptions{
+		Level: level,
+	})
+
+	return slog.New(handler)
 }
 
 func main() {
@@ -78,6 +110,10 @@ func execCommand() {
 	execFS.StringVar(&flags.Output, "o", "", "Output file (default: stdout)")
 	execFS.StringVar(&flags.Timeout, "timeout", "", "Timeout override (e.g., 30s)")
 	execFS.StringVar(&flags.Timeout, "t", "", "Timeout override (e.g., 30s)")
+	execFS.BoolVar(&flags.Verbose, "verbose", false, "Enable verbose logging")
+	execFS.BoolVar(&flags.Verbose, "v", false, "Enable verbose logging")
+	execFS.BoolVar(&flags.Quiet, "quiet", false, "Suppress info logs (errors only)")
+	execFS.BoolVar(&flags.Quiet, "q", false, "Suppress info logs (errors only)")
 
 	execFS.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: %s exec [flags]\n\n", os.Args[0])
@@ -100,18 +136,41 @@ func execCommand() {
 		os.Exit(1)
 	}
 
-	if err := runExec(flags); err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+	// Setup logger based on flags
+	logger := setupLogger(flags.Verbose, flags.Quiet)
+
+	if err := runExec(flags, logger); err != nil {
+		logger.Error("Execution failed", "error", err)
 		os.Exit(1)
 	}
 }
 
-func runExec(flags ExecFlags) error {
+func runExec(flags ExecFlags, logger *slog.Logger) error {
+	// Initialize execution stats
+	stats := &ExecutionStats{StartTime: time.Now()}
+
+	outputDest := "stdout"
+	if flags.Output != "" {
+		outputDest = flags.Output
+	}
+
+	logger.Info("Starting runner execution",
+		"config", flags.Config,
+		"format", flags.Format,
+		"output", outputDest,
+		"timeout", flags.Timeout)
+
 	// Load and parse YAML configuration
 	config, err := loadConfig(flags.Config)
 	if err != nil {
 		return fmt.Errorf("failed to load config: %w", err)
 	}
+
+	logger.Info("Configuration loaded",
+		"command", config.Command,
+		"args", config.Args,
+		"type", config.ProcessType,
+		"env_vars", len(config.Env))
 
 	// Apply timeout override if provided
 	timeout := config.Timeout
@@ -130,18 +189,33 @@ func runExec(flags ExecFlags) error {
 		timeoutDuration = 30 * time.Second // Default timeout
 	}
 
+	logger.Debug("Timeout configuration",
+		"timeout", timeoutDuration,
+		"source", func() string {
+			if flags.Timeout != "" {
+				return "flag_override"
+			}
+			if config.Timeout != "" {
+				return "config_file"
+			}
+			return "default"
+		}())
+
 	// Create context with timeout
 	ctx, cancel := context.WithTimeout(context.Background(), timeoutDuration)
 	defer cancel()
 
+	logger.Info("Executing process",
+		"timeout", timeoutDuration)
+
 	// Execute the process
-	events, err := executeProcess(ctx, config, flags.Format)
+	events, err := executeProcess(ctx, config, flags.Format, logger)
 	if err != nil {
 		return fmt.Errorf("failed to execute process: %w", err)
 	}
 
 	// Format and output results
-	return formatOutput(events, flags.Format, flags.Output, config)
+	return formatOutput(events, flags.Format, flags.Output, config, logger, stats)
 }
 
 func loadConfig(configPath string) (*Config, error) {
@@ -172,7 +246,7 @@ func loadConfig(configPath string) (*Config, error) {
 	return &config, nil
 }
 
-func executeProcess(ctx context.Context, config *Config, format string) (iter.Seq2[consolestream.Event, error], error) {
+func executeProcess(ctx context.Context, config *Config, format string, logger *slog.Logger) (iter.Seq2[consolestream.Event, error], error) {
 	// Create cancellor
 	cancellor := consolestream.NewLocalCancellor(600 * time.Second)
 
@@ -188,7 +262,17 @@ func executeProcess(ctx context.Context, config *Config, format string) (iter.Se
 	if format == "asciicast" {
 		// For asciicast, use a smaller flush interval to capture more granular output
 		opts = append(opts, consolestream.WithFlushInterval(100*time.Millisecond))
+		logger.Debug("Using optimized flush interval for asciicast", "interval", "100ms")
 	}
+
+	logger.Debug("Process options configured",
+		"env_vars", len(config.Env),
+		"flush_interval", func() string {
+			if format == "asciicast" {
+				return "100ms"
+			}
+			return "default"
+		}())
 
 	// Execute based on process type
 	switch config.ProcessType {
@@ -219,12 +303,13 @@ func executeProcess(ctx context.Context, config *Config, format string) (iter.Se
 	}
 }
 
-func formatOutput(events iter.Seq2[consolestream.Event, error], format, outputPath string, config *Config) error {
+func formatOutput(events iter.Seq2[consolestream.Event, error], format, outputPath string, config *Config, logger *slog.Logger, stats *ExecutionStats) error {
 	var writer io.Writer = os.Stdout
 	var closeFunc func() error
 
 	// Setup output destination
 	if outputPath != "" {
+		logger.Info("Writing output to file", "path", outputPath, "format", format)
 		file, err := os.Create(outputPath)
 		if err != nil {
 			return fmt.Errorf("failed to create output file: %w", err)
@@ -233,22 +318,82 @@ func formatOutput(events iter.Seq2[consolestream.Event, error], format, outputPa
 		closeFunc = file.Close
 		defer func() {
 			if closeFunc != nil {
-				_ = closeFunc()
+				if closeErr := closeFunc(); closeErr != nil {
+					logger.Error("Failed to close output file", "error", closeErr)
+				} else {
+					// Log file completion info
+					if fileInfo, statErr := file.Stat(); statErr == nil {
+						logger.Info("File written successfully",
+							"path", outputPath,
+							"size_bytes", fileInfo.Size(),
+							"events_processed", stats.EventCount)
+					}
+				}
 			}
 		}()
+	} else {
+		logger.Debug("Writing output to stdout", "format", format)
+	}
+
+	// Wrap events iterator to collect stats
+	wrappedEvents := func(yield func(consolestream.Event, error) bool) {
+		for event, err := range events {
+			stats.EventCount++
+			if err != nil {
+				stats.ErrorCount++
+			} else {
+				// Track output bytes for data events
+				switch e := event.Event.(type) {
+				case *consolestream.PipeOutputData:
+					stats.OutputBytes += int64(len(e.Data))
+				case *consolestream.PTYOutputData:
+					stats.OutputBytes += int64(len(e.Data))
+				case *consolestream.ProcessEnd:
+					stats.ExitCode = &e.ExitCode
+				}
+			}
+			if !yield(event, err) {
+				return
+			}
+		}
 	}
 
 	// Format output based on requested format
+	var err error
 	switch format {
 	case "text":
-		return formatTextOutput(events, writer)
+		err = formatTextOutput(wrappedEvents, writer)
 	case "json":
-		return formatJSONOutput(events, writer)
+		err = formatJSONOutput(wrappedEvents, writer)
 	case "asciicast":
-		return formatAscicastOutput(events, writer, config)
+		err = formatAscicastOutput(wrappedEvents, writer, config)
 	default:
 		return fmt.Errorf("invalid output format '%s', must be 'text', 'json', or 'asciicast'", format)
 	}
+
+	// Calculate duration after processing is complete
+	stats.Duration = time.Since(stats.StartTime)
+
+	// Log execution summary
+	outputDest := "stdout"
+	if outputPath != "" {
+		outputDest = "file"
+	}
+
+	exitCode := "unknown"
+	if stats.ExitCode != nil {
+		exitCode = fmt.Sprintf("%d", *stats.ExitCode)
+	}
+
+	logger.Info("Execution completed",
+		"duration", stats.Duration.String(),
+		"exit_code", exitCode,
+		"output_events", stats.EventCount,
+		"error_events", stats.ErrorCount,
+		"output_bytes", stats.OutputBytes,
+		"output_destination", outputDest)
+
+	return err
 }
 
 func formatTextOutput(events iter.Seq2[consolestream.Event, error], writer io.Writer) error {
@@ -320,7 +465,7 @@ func buildCommandString(command string, args []string) string {
 
 func formatAscicastOutput(events iter.Seq2[consolestream.Event, error], writer io.Writer, config *Config) error {
 	// Create asciicast metadata
-	now := time.Now()
+	now := time.Now().Unix()
 	metadata := consolestream.AscicastV3Metadata{
 		Command:   buildCommandString(config.Command, config.Args),
 		Title:     fmt.Sprintf("Execution of %s", config.Command),

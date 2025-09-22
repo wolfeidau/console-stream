@@ -22,7 +22,7 @@ type TermInfo struct {
 // AscicastV3Metadata contains the metadata for the asciicast header
 type AscicastV3Metadata struct {
 	Term      TermInfo          `json:"term"`
-	Timestamp *time.Time        `json:"timestamp,omitempty"`
+	Timestamp *int64            `json:"timestamp,omitempty"`
 	Command   string            `json:"command,omitempty"`
 	Title     string            `json:"title,omitempty"`
 	Env       map[string]string `json:"env,omitempty"`
