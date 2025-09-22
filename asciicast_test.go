@@ -15,7 +15,7 @@ func TestAscicastV3HeaderMarshalJSON(t *testing.T) {
 	t.Parallel()
 
 	t.Run("header with all metadata fields", func(t *testing.T) {
-		timestamp := time.Date(2024, 1, 1, 12, 0, 0, 0, time.UTC)
+		timestamp := time.Date(2024, 1, 1, 12, 0, 0, 0, time.UTC).Unix()
 		metadata := AscicastV3Metadata{
 			Term:      TermInfo{Cols: 80, Rows: 24},
 			Timestamp: &timestamp,
@@ -43,7 +43,7 @@ func TestAscicastV3HeaderMarshalJSON(t *testing.T) {
 		require.Equal(t, float64(3), result["version"])
 		require.Equal(t, "echo test", result["command"])
 		require.Equal(t, "Test Session", result["title"])
-		require.Equal(t, "2024-01-01T12:00:00Z", result["timestamp"])
+		require.Equal(t, float64(1704110400), result["timestamp"]) // Unix timestamp for 2024-01-01T12:00:00Z
 
 		term := result["term"].(map[string]any)
 		require.Equal(t, float64(80), term["cols"])
