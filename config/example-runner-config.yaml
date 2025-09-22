@@ -1,0 +1,9 @@
+command: "docker"
+args: ["pull", "mcr.microsoft.com/devcontainers/go:latest"]
+env:
+  MESSAGE: "CLI execution"
+process_type: "pty"
+timeout: "15m"
+pty_size:
+  cols: 160
+  rows: 100

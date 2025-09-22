@@ -3,3 +3,5 @@
 /tmp
 /.claude
 *.cast
+/bin
+coverage*
