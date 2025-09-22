@@ -308,6 +308,229 @@ for part, err := range process.ExecuteAndStream(ctx) {
 }
 ```
 
+## Command Line Runner Tool
+
+The `cmd/runner` tool provides a command-line interface for executing processes using console-stream with YAML configuration files. This tool is useful for scripting, CI/CD pipelines, and interactive terminal recording.
+
+### Installation and Building
+
+```bash
+# Build the runner tool
+make build
+
+# Or build manually
+go build -o bin/runner ./cmd/runner
+```
+
+### Basic Usage
+
+```bash
+# Execute a command with YAML configuration
+./bin/runner exec --config task.yaml
+
+# Use short flags
+./bin/runner exec -c task.yaml -f json -o output.json
+```
+
+### Output Formats
+
+The runner supports three output formats optimized for different use cases:
+
+#### Text Format (Default)
+Human-readable output with timestamps and labeled streams:
+```bash
+./bin/runner exec --config task.yaml --format text
+```
+**Example output:**
+```
+Process started (PID: 12345, Command: docker)
+[STDOUT] 18:45:12: latest: Pulling from devcontainers/go
+[STDOUT] 18:45:13: d1e404420307: Already exists
+Process completed (Exit Code: 0, Duration: 2.543s)
+```
+
+#### JSON Format
+Structured output for programmatic consumption and log analysis:
+```bash
+./bin/runner exec --config task.yaml --format json --output execution.json
+```
+**Example output:**
+```json
+{"timestamp":"2025-09-22T18:45:12Z","event_type":"ProcessStart","event":{"PID":12345,"Command":"docker","Args":["pull","image"]}}
+{"timestamp":"2025-09-22T18:45:12Z","event_type":"PipeOutputEvent","event":{"Data":"latest: Pulling...\n","Stream":"STDOUT"}}
+{"timestamp":"2025-09-22T18:45:15Z","event_type":"ProcessEnd","event":{"ExitCode":0,"Duration":"2.543210s","Success":true}}
+```
+
+#### Asciicast Format
+Terminal session recording compatible with [asciinema](https://asciinema.org/) players:
+```bash
+./bin/runner exec --config task.yaml --format asciicast --output recording.cast
+
+# Play the recording
+asciinema play recording.cast
+```
+
+**Features:**
+- Compatible with asciinema ecosystem
+- Preserves ANSI escape sequences and terminal formatting
+- Includes metadata (command, timestamp, terminal size)
+- Optimized 100ms flush interval for smooth playback
+
+### Configuration File Format
+
+Create YAML configuration files to define process execution parameters:
+
+```yaml
+# Basic configuration
+command: "docker"
+args: ["pull", "mcr.microsoft.com/devcontainers/go:latest"]
+process_type: "pty"  # Use "pipe" for simple processes, "pty" for interactive
+timeout: "15m"
+
+# Environment variables
+env:
+  NODE_ENV: "production"
+  DEBUG: "true"
+  API_KEY: "secret-value"
+
+# PTY-specific settings (when process_type: "pty")
+pty_size:
+  rows: 24
+  cols: 80
+```
+
+#### Configuration Options
+
+| Field | Type | Description | Default |
+|-------|------|-------------|---------|
+| `command` | string | **Required.** The command to execute | - |
+| `args` | []string | Command line arguments | `[]` |
+| `process_type` | string | Process type: `"pipe"` or `"pty"` | `"pipe"` |
+| `timeout` | string | Maximum execution time (e.g., "30s", "5m") | `"30s"` |
+| `env` | map[string]string | Environment variables | `{}` |
+| `pty_size.rows` | int | Terminal rows (PTY only) | `24` |
+| `pty_size.cols` | int | Terminal columns (PTY only) | `80` |
+
+### Use Cases and Examples
+
+#### CI/CD Pipeline Integration
+Record build processes for debugging and compliance:
+```yaml
+# build-config.yaml
+command: "npm"
+args: ["run", "build"]
+env:
+  NODE_ENV: "production"
+  CI: "true"
+process_type: "pty"
+timeout: "10m"
+pty_size:
+  rows: 30
+  cols: 120
+```
+
+```bash
+# Execute and record build process
+./bin/runner exec --config build-config.yaml \
+  --format asciicast \
+  --output "build-$(date +%Y%m%d).cast"
+```
+
+#### Docker Operations
+Monitor container operations with progress bars and colored output:
+```yaml
+# docker-config.yaml
+command: "docker"
+args: ["build", "-t", "myapp:latest", "."]
+process_type: "pty"
+timeout: "20m"
+env:
+  DOCKER_BUILDKIT: "1"
+```
+
+#### Database Migrations
+Track migration execution with detailed logging:
+```yaml
+# migration-config.yaml
+command: "migrate"
+args: ["-path", "./migrations", "-database", "postgres://...", "up"]
+process_type: "pipe"
+timeout: "5m"
+env:
+  DB_HOST: "localhost"
+  DB_PORT: "5432"
+```
+
+```bash
+# Execute with JSON output for log aggregation
+./bin/runner exec --config migration-config.yaml \
+  --format json \
+  --output migration-log.json
+```
+
+### Advanced Features
+
+#### Timeout Management
+Override configuration timeouts at runtime:
+```bash
+# Override timeout for slow operations
+./bin/runner exec --config task.yaml --timeout 1h
+```
+
+#### Output Redirection
+Capture execution results to files:
+```bash
+# Save structured output
+./bin/runner exec --config task.yaml --format json --output results.json
+
+# Create session recordings
+./bin/runner exec --config task.yaml --format asciicast --output session.cast
+```
+
+#### Error Handling
+The runner provides detailed error reporting and appropriate exit codes:
+- **Exit 0**: Successful execution
+- **Exit 1**: Configuration, execution, or formatting errors
+- **Process exit code**: Passed through when the executed command fails
+
+### Integration Examples
+
+#### Makefile Integration
+```makefile
+.PHONY: test-with-recording
+test-with-recording:
+	./bin/runner exec --config test-config.yaml \
+		--format asciicast \
+		--output test-session-$(shell date +%Y%m%d).cast
+```
+
+#### GitHub Actions
+```yaml
+- name: Execute and Record Process
+  run: |
+    ./bin/runner exec --config .github/workflows/task.yaml \
+      --format json \
+      --output execution-log.json
+```
+
+#### Shell Scripting
+```bash
+#!/bin/bash
+set -e
+
+# Execute process and capture exit code
+if ./bin/runner exec --config deploy.yaml --format json --output deploy.json; then
+    echo "Deployment successful"
+    # Process success logs
+    jq '.[] | select(.event_type=="ProcessEnd")' deploy.json
+else
+    echo "Deployment failed"
+    # Process error logs
+    jq '.[] | select(.error==true)' deploy.json
+    exit 1
+fi
+```
+
 ## How It Works
 
 1. **Process Execution**: Starts your command with separate stdout/stderr pipes or PTY
