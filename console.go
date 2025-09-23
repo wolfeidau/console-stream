@@ -13,11 +13,13 @@ type ProcessOption func(*processConfig)
 
 // processConfig holds configuration options for processes
 type processConfig struct {
-	cancellor     Cancellor
-	env           []string
-	ptySize       any           // Uses any to avoid dependency on pty package
-	flushInterval time.Duration // How often to flush buffers
-	maxBufferSize int           // Maximum buffer size before forced flush
+	cancellor       Cancellor
+	env             []string
+	ptySize         any           // Uses any to avoid dependency on pty package
+	flushInterval   time.Duration // How often to flush buffers
+	maxBufferSize   int           // Maximum buffer size before forced flush
+	meter           any           // OpenTelemetry meter (uses any to avoid dependency)
+	metricsInterval time.Duration // How often to aggregate metrics buckets
 }
 
 // applyDefaults sets sensible defaults for the process configuration
@@ -30,6 +32,9 @@ func (cfg *processConfig) applyDefaults() {
 	}
 	if cfg.maxBufferSize == 0 {
 		cfg.maxBufferSize = 10 * 1024 * 1024 // Default 10MB buffer limit
+	}
+	if cfg.metricsInterval == 0 {
+		cfg.metricsInterval = time.Second // Default 1-second metrics aggregation
 	}
 }
 
@@ -74,6 +79,20 @@ func WithFlushInterval(interval time.Duration) ProcessOption {
 func WithMaxBufferSize(size int) ProcessOption {
 	return func(cfg *processConfig) {
 		cfg.maxBufferSize = size
+	}
+}
+
+// WithMeter sets an OpenTelemetry meter for metrics collection
+func WithMeter(meter any) ProcessOption {
+	return func(cfg *processConfig) {
+		cfg.meter = meter
+	}
+}
+
+// WithMetricsInterval sets how often to aggregate metrics into buckets
+func WithMetricsInterval(interval time.Duration) ProcessOption {
+	return func(cfg *processConfig) {
+		cfg.metricsInterval = interval
 	}
 }
 

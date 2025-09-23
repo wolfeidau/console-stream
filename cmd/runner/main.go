@@ -14,6 +14,7 @@ import (
 
 	"github.com/creack/pty"
 	consolestream "github.com/wolfeidau/console-stream"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"gopkg.in/yaml.v3"
 )
 
@@ -38,6 +39,14 @@ type ExecFlags struct {
 	Timeout string
 	Verbose bool
 	Quiet   bool
+	Metrics bool
+}
+
+// ProcessResult holds the process and optional metrics storage
+type ProcessResult struct {
+	Process       any
+	LocalStorage  *LocalStorage
+	MeterProvider *sdkmetric.MeterProvider
 }
 
 // ExecutionStats tracks metrics during execution
@@ -114,6 +123,8 @@ func execCommand() {
 	execFS.BoolVar(&flags.Verbose, "v", false, "Enable verbose logging")
 	execFS.BoolVar(&flags.Quiet, "quiet", false, "Suppress info logs (errors only)")
 	execFS.BoolVar(&flags.Quiet, "q", false, "Suppress info logs (errors only)")
+	execFS.BoolVar(&flags.Metrics, "metrics", false, "Enable OpenTelemetry metrics collection and display histograms")
+	execFS.BoolVar(&flags.Metrics, "m", false, "Enable OpenTelemetry metrics collection and display histograms")
 
 	execFS.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: %s exec [flags]\n\n", os.Args[0])
@@ -209,13 +220,29 @@ func runExec(flags ExecFlags, logger *slog.Logger) error {
 		"timeout", timeoutDuration)
 
 	// Execute the process
-	events, err := executeProcess(ctx, config, flags.Format, logger)
+	events, processResult, err := executeProcess(ctx, config, flags.Format, flags.Metrics, logger)
 	if err != nil {
 		return fmt.Errorf("failed to execute process: %w", err)
 	}
 
 	// Format and output results
-	return formatOutput(events, flags.Format, flags.Output, config, logger, stats)
+	err = formatOutput(events, flags.Format, flags.Output, config, logger, stats)
+
+	// Shutdown metrics provider to force final flush
+	if processResult.MeterProvider != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if shutdownErr := processResult.MeterProvider.Shutdown(ctx); shutdownErr != nil {
+			logger.Warn("Failed to shutdown metrics provider", "error", shutdownErr)
+		}
+	}
+
+	// Print process statistics if available
+	if err == nil {
+		printProcessStats(processResult, logger)
+	}
+
+	return err
 }
 
 func loadConfig(configPath string) (*Config, error) {
@@ -246,7 +273,7 @@ func loadConfig(configPath string) (*Config, error) {
 	return &config, nil
 }
 
-func executeProcess(ctx context.Context, config *Config, format string, logger *slog.Logger) (iter.Seq2[consolestream.Event, error], error) {
+func executeProcess(ctx context.Context, config *Config, format string, enableMetrics bool, logger *slog.Logger) (iter.Seq2[consolestream.Event, error], *ProcessResult, error) {
 	// Create cancellor
 	cancellor := consolestream.NewLocalCancellor(600 * time.Second)
 
@@ -257,6 +284,23 @@ func executeProcess(ctx context.Context, config *Config, format string, logger *
 	// Add environment variables
 	if len(config.Env) > 0 {
 		opts = append(opts, consolestream.WithEnvMap(config.Env))
+	}
+
+	// Configure metrics if enabled
+	var localStorage *LocalStorage
+	var meterProvider *sdkmetric.MeterProvider
+	if enableMetrics {
+		// Create local storage and exporter for metrics collection
+		localStorage = NewLocalStorage()
+		localExporter := NewLocalExporter(localStorage)
+
+		// Create meter provider with the local exporter
+		reader := sdkmetric.NewPeriodicReader(localExporter, sdkmetric.WithInterval(time.Second))
+		meterProvider = sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+
+		meter := meterProvider.Meter("console-stream-runner")
+		opts = append(opts, consolestream.WithMeter(meter))
+		logger.Debug("Metrics collection enabled with local storage")
 	}
 
 	if format == "asciicast" {
@@ -278,7 +322,7 @@ func executeProcess(ctx context.Context, config *Config, format string, logger *
 	switch config.ProcessType {
 	case "pipe":
 		process := consolestream.NewPipeProcess(config.Command, config.Args, opts...)
-		return process.ExecuteAndStream(ctx), nil
+		return process.ExecuteAndStream(ctx), &ProcessResult{Process: process, LocalStorage: localStorage, MeterProvider: meterProvider}, nil
 	case "pty":
 		// Add PTY size if specified
 		if config.PTYSize != nil {
@@ -286,10 +330,10 @@ func executeProcess(ctx context.Context, config *Config, format string, logger *
 			rows := config.PTYSize.Rows
 			cols := config.PTYSize.Cols
 			if rows < 0 || rows > 65535 {
-				return nil, fmt.Errorf("invalid PTY rows %d, must be 0-65535", rows)
+				return nil, nil, fmt.Errorf("invalid PTY rows %d, must be 0-65535", rows)
 			}
 			if cols < 0 || cols > 65535 {
-				return nil, fmt.Errorf("invalid PTY cols %d, must be 0-65535", cols)
+				return nil, nil, fmt.Errorf("invalid PTY cols %d, must be 0-65535", cols)
 			}
 			opts = append(opts, consolestream.WithPTYSize(pty.Winsize{
 				Rows: uint16(rows), //nolint:gosec // Range validated above
@@ -297,9 +341,9 @@ func executeProcess(ctx context.Context, config *Config, format string, logger *
 			}))
 		}
 		process := consolestream.NewPTYProcess(config.Command, config.Args, opts...)
-		return process.ExecuteAndStream(ctx), nil
+		return process.ExecuteAndStream(ctx), &ProcessResult{Process: process, LocalStorage: localStorage, MeterProvider: meterProvider}, nil
 	default:
-		return nil, fmt.Errorf("invalid process_type '%s', must be 'pipe' or 'pty'", config.ProcessType)
+		return nil, nil, fmt.Errorf("invalid process_type '%s', must be 'pipe' or 'pty'", config.ProcessType)
 	}
 }
 
@@ -505,4 +549,105 @@ func formatAscicastOutput(events iter.Seq2[consolestream.Event, error], writer i
 	}
 
 	return nil
+}
+
+// printProcessStats displays comprehensive process statistics with visualizations
+func printProcessStats(processResult *ProcessResult, logger *slog.Logger) {
+	// Try to get stats from PTY process
+	if ptyProcess, ok := processResult.Process.(interface {
+		GetStats() consolestream.PTYStatsSnapshot
+	}); ok {
+		stats := ptyProcess.GetStats()
+
+		// Print basic stats
+		logger.Info("PTY Process Statistics",
+			"duration", stats.Duration.String(),
+			"total_events", stats.EventCount,
+			"error_events", stats.ErrorCount,
+			"exit_code", func() string {
+				if stats.ExitCode != nil {
+					return fmt.Sprintf("%d", *stats.ExitCode)
+				}
+				return "unknown"
+			}(),
+		)
+
+		// Print histogram visualizations from OpenTelemetry data if available
+		if processResult.LocalStorage != nil {
+			printHistogramVisualizations(processResult.LocalStorage)
+		}
+	}
+}
+
+// printHistogramVisualizations renders histograms from stored OpenTelemetry data
+func printHistogramVisualizations(localStorage *LocalStorage) {
+	histograms := localStorage.GetHistograms()
+
+	for scope, scopeHistograms := range histograms {
+		if len(scopeHistograms) == 0 {
+			continue
+		}
+
+		fmt.Printf("\n=== %s Metrics ===\n", scope)
+
+		for _, hist := range scopeHistograms {
+			if hist.Count == 0 {
+				continue // Skip empty histograms
+			}
+
+			fmt.Printf("\n%s:\n", hist.Name)
+			if hist.Description != "" {
+				fmt.Printf("  Description: %s\n", hist.Description)
+			}
+			fmt.Printf("  Count: %d, Sum: %.2f, Min: %.2f, Max: %.2f\n",
+				hist.Count, hist.Sum, hist.Min, hist.Max)
+
+			// Render ASCII histogram from bucket data
+			if len(hist.Bounds) > 0 && len(hist.BucketCounts) > 0 {
+				renderOtelHistogram(hist)
+			}
+		}
+	}
+}
+
+// renderOtelHistogram creates an ASCII bar chart from OpenTelemetry histogram data
+func renderOtelHistogram(hist HistogramSnapshot) {
+	fmt.Printf("  Histogram:\n")
+
+	// Find the maximum count for scaling
+	maxCount := uint64(1)
+	for _, count := range hist.BucketCounts {
+		if count > maxCount {
+			maxCount = count
+		}
+	}
+
+	// Render each bucket
+	for i, count := range hist.BucketCounts {
+		if count == 0 {
+			continue // Skip empty buckets
+		}
+
+		// Calculate bar length (max 40 characters)
+		barLength := int((float64(count) / float64(maxCount)) * 40)
+		if barLength == 0 && count > 0 {
+			barLength = 1
+		}
+
+		bar := strings.Repeat("█", barLength)
+		padding := strings.Repeat(" ", 40-barLength)
+
+		// Format bucket range
+		var bucketLabel string
+		switch {
+		case i == 0:
+			bucketLabel = fmt.Sprintf("(-∞, %.1f]", hist.Bounds[0])
+		case i < len(hist.Bounds):
+			bucketLabel = fmt.Sprintf("(%.1f, %.1f]", hist.Bounds[i-1], hist.Bounds[i])
+		default:
+			bucketLabel = fmt.Sprintf("(%.1f, +∞)", hist.Bounds[len(hist.Bounds)-1])
+		}
+
+		fmt.Printf("    %20s %s%s %d\n", bucketLabel, bar, padding, count)
+	}
 }
