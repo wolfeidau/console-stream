@@ -56,7 +56,7 @@ func TestNewProcess(t *testing.T) {
 func TestProcessExecuteAndStreamPipeMode(t *testing.T) {
 	t.Parallel()
 
-	process := NewProcess("echo", []string{"hello from pipe"})
+	process := NewProcess("bash", []string{"-c", "for i in {1..10}; do echo $i; done; sleep 1;"}, WithPipeMode(), WithFlushInterval(500*time.Millisecond))
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
@@ -71,6 +71,8 @@ func TestProcessExecuteAndStreamPipeMode(t *testing.T) {
 		}
 	}
 
+	t.Logf("Received %d events", len(events))
+
 	require.GreaterOrEqual(t, len(events), 2) // At least ProcessStart and ProcessEnd
 
 	// Check that we have the expected event types
@@ -83,7 +85,7 @@ func TestProcessExecuteAndStreamPipeMode(t *testing.T) {
 		if event.EventType() == OutputEvent {
 			hasOutput = true
 			outputData := event.Event.(*OutputData)
-			require.Contains(t, string(outputData.Data), "hello from pipe")
+			require.Contains(t, string(outputData.Data), "1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n")
 		}
 	}
 	require.True(t, hasOutput, "Should have output events")
@@ -92,7 +94,8 @@ func TestProcessExecuteAndStreamPipeMode(t *testing.T) {
 func TestProcessExecuteAndStreamPTYMode(t *testing.T) {
 	t.Parallel()
 
-	process := NewProcess("echo", []string{"hello from pty"}, WithPTYMode())
+	process := NewProcess("bash", []string{"-c", "for i in {1..10}; do echo $i; done; sleep 1;"}, WithPTYMode(), WithFlushInterval(500*time.Millisecond))
+
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
@@ -107,6 +110,8 @@ func TestProcessExecuteAndStreamPTYMode(t *testing.T) {
 		}
 	}
 
+	t.Logf("Received %d events", len(events))
+
 	require.GreaterOrEqual(t, len(events), 2) // At least ProcessStart and ProcessEnd
 
 	// Check that we have the expected event types
@@ -119,7 +124,7 @@ func TestProcessExecuteAndStreamPTYMode(t *testing.T) {
 		if event.EventType() == OutputEvent {
 			hasOutput = true
 			outputData := event.Event.(*OutputData)
-			require.Contains(t, string(outputData.Data), "hello from pty")
+			require.Contains(t, string(outputData.Data), "1\r\n2\r\n3\r\n4\r\n5\r\n6\r\n7\r\n8\r\n9\r\n10\r\n")
 		}
 	}
 	require.True(t, hasOutput, "Should have output events")
@@ -290,7 +295,7 @@ func TestProcessWithMetrics(t *testing.T) {
 
 	// Verify stats are empty when no meter provided
 	stats := process.GetStats()
-	require.Equal(t, PTYStatsSnapshot{}, stats)
+	require.Equal(t, ProcessStatsSnapshot{}, stats)
 }
 
 func TestProcessModeSelection(t *testing.T) {

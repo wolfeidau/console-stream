@@ -119,10 +119,11 @@ func (e *LocalExporter) Aggregation(metric.InstrumentKind) metric.Aggregation {
 	// Define explicit bucket boundaries for better histogram visualization
 	// These buckets cover byte ranges from small (1 byte) to large (10MB+)
 	buckets := []float64{
-		1, 10, 100, 1024, // 1B, 10B, 100B, 1KB
-		10240, 102400, // 10KB, 100KB
-		1048576, 10485760, // 1MB, 10MB
-		104857600, // 100MB
+		0x10, 0x20, 0x40, 0x80,
+		0x100, 0x200, 0x400, 0x800,
+		0x1000, 0x2000, 0x4000, 0x8000,
+		0x10000, 0x20000, 0x40000, 0x80000,
+		0x100000, 0x200000, 0x400000, 0x800000,
 	}
 	return metric.AggregationExplicitBucketHistogram{
 		Boundaries: buckets,
