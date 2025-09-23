@@ -21,7 +21,7 @@ func main() {
 	fmt.Println("=== Example 1: Basic PTY Process ===")
 
 	// Create a PTY process that will show colors
-	process1 := consolestream.NewPTYProcess("echo", []string{"-e", "\\033[31mRed text\\033[0m and \\033[32mGreen text\\033[0m"}, consolestream.WithCancellor(cancellor))
+	process1 := consolestream.NewProcess("echo", []string{"-e", "\\033[31mRed text\\033[0m and \\033[32mGreen text\\033[0m"}, consolestream.WithCancellor(cancellor), consolestream.WithPTYMode())
 
 	for part, err := range process1.ExecuteAndStream(ctx) {
 		if err != nil {
@@ -30,8 +30,8 @@ func main() {
 		}
 
 		switch part.EventType() {
-		case consolestream.PTYOutputEvent:
-			event := part.Event.(*consolestream.PTYOutputData)
+		case consolestream.OutputEvent:
+			event := part.Event.(*consolestream.OutputData)
 			fmt.Printf("[PTY] %s: %q\n", part.Timestamp.Format("15:04:05.000"), string(event.Data))
 		case consolestream.ProcessStartEvent:
 			event := part.Event.(*consolestream.ProcessStart)
@@ -51,7 +51,7 @@ func main() {
 
 	// Create a PTY process with specific terminal size
 	size := pty.Winsize{Rows: 24, Cols: 80}
-	process2 := consolestream.NewPTYProcess("bash", []string{"-c", "echo 'Terminal size: '$(tput cols)'x'$(tput lines)"}, consolestream.WithCancellor(cancellor), consolestream.WithPTYSize(size))
+	process2 := consolestream.NewProcess("bash", []string{"-c", "echo 'Terminal size: '$(tput cols)'x'$(tput lines)"}, consolestream.WithCancellor(cancellor), consolestream.WithPTYSize(size))
 
 	for part, err := range process2.ExecuteAndStream(ctx) {
 		if err != nil {
@@ -60,8 +60,8 @@ func main() {
 		}
 
 		switch part.EventType() {
-		case consolestream.PTYOutputEvent:
-			event := part.Event.(*consolestream.PTYOutputData)
+		case consolestream.OutputEvent:
+			event := part.Event.(*consolestream.OutputData)
 			fmt.Printf("[PTY-SIZED] %s: %s", part.Timestamp.Format("15:04:05.000"), string(event.Data))
 		case consolestream.ProcessStartEvent:
 			event := part.Event.(*consolestream.ProcessStart)
@@ -80,14 +80,14 @@ func main() {
 	fmt.Printf("\n=== Example 3: Interactive Command Simulation ===")
 
 	// Simulate an interactive command that might use colors or progress bars
-	process3 := consolestream.NewPTYProcess("bash", []string{"-c", `
+	process3 := consolestream.NewProcess("bash", []string{"-c", `
 echo -e "\033[32mStarting task...\033[0m"
 for i in {1..5}; do
     echo -e "\033[34mProgress: $i/5\033[0m"
     sleep 0.5
 done
 echo -e "\033[32mCompleted!\033[0m"
-`}, consolestream.WithCancellor(cancellor))
+`}, consolestream.WithCancellor(cancellor), consolestream.WithPTYMode())
 
 	fmt.Println("Running interactive command with colors...")
 	eventCount := 0
@@ -100,8 +100,8 @@ echo -e "\033[32mCompleted!\033[0m"
 		eventCount++
 
 		switch part.EventType() {
-		case consolestream.PTYOutputEvent:
-			event := part.Event.(*consolestream.PTYOutputData)
+		case consolestream.OutputEvent:
+			event := part.Event.(*consolestream.OutputData)
 			// Display raw output to show ANSI sequences are preserved
 			fmt.Printf("Event %d [PTY-INTERACTIVE] %s: %q\n", eventCount, part.Timestamp.Format("15:04:05.000"), string(event.Data))
 		case consolestream.ProcessStartEvent:

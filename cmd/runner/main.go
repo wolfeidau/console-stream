@@ -321,9 +321,11 @@ func executeProcess(ctx context.Context, config *Config, format string, enableMe
 	// Execute based on process type
 	switch config.ProcessType {
 	case "pipe":
-		process := consolestream.NewPipeProcess(config.Command, config.Args, opts...)
+		opts = append(opts, consolestream.WithPipeMode())
+		process := consolestream.NewProcess(config.Command, config.Args, opts...)
 		return process.ExecuteAndStream(ctx), &ProcessResult{Process: process, LocalStorage: localStorage, MeterProvider: meterProvider}, nil
 	case "pty":
+		opts = append(opts, consolestream.WithPTYMode())
 		// Add PTY size if specified
 		if config.PTYSize != nil {
 			// Validate ranges to prevent overflow
@@ -340,7 +342,7 @@ func executeProcess(ctx context.Context, config *Config, format string, enableMe
 				Cols: uint16(cols), //nolint:gosec // Range validated above
 			}))
 		}
-		process := consolestream.NewPTYProcess(config.Command, config.Args, opts...)
+		process := consolestream.NewProcess(config.Command, config.Args, opts...)
 		return process.ExecuteAndStream(ctx), &ProcessResult{Process: process, LocalStorage: localStorage, MeterProvider: meterProvider}, nil
 	default:
 		return nil, nil, fmt.Errorf("invalid process_type '%s', must be 'pipe' or 'pty'", config.ProcessType)
@@ -388,9 +390,7 @@ func formatOutput(events iter.Seq2[consolestream.Event, error], format, outputPa
 			} else {
 				// Track output bytes for data events
 				switch e := event.Event.(type) {
-				case *consolestream.PipeOutputData:
-					stats.OutputBytes += int64(len(e.Data))
-				case *consolestream.PTYOutputData:
+				case *consolestream.OutputData:
 					stats.OutputBytes += int64(len(e.Data))
 				case *consolestream.ProcessEnd:
 					stats.ExitCode = &e.ExitCode
@@ -448,12 +448,9 @@ func formatTextOutput(events iter.Seq2[consolestream.Event, error], writer io.Wr
 		}
 
 		switch event.EventType() {
-		case consolestream.PipeOutputEvent:
-			data := event.Event.(*consolestream.PipeOutputData)
-			fmt.Fprintf(writer, "[%s] %s: %s", data.Stream.String(), event.Timestamp.Format("15:04:05"), string(data.Data))
-		case consolestream.PTYOutputEvent:
-			data := event.Event.(*consolestream.PTYOutputData)
-			fmt.Fprintf(writer, "[PTY] %s: %s", event.Timestamp.Format("15:04:05"), string(data.Data))
+		case consolestream.OutputEvent:
+			data := event.Event.(*consolestream.OutputData)
+			fmt.Fprintf(writer, "[OUTPUT] %s: %s", event.Timestamp.Format("15:04:05"), string(data.Data))
 		case consolestream.ProcessStartEvent:
 			data := event.Event.(*consolestream.ProcessStart)
 			fmt.Fprintf(writer, "Process started (PID: %d, Command: %s)\n", data.PID, data.Command)

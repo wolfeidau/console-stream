@@ -15,7 +15,7 @@ func main() {
 	cancellor := consolestream.NewLocalCancellor(5 * time.Second)
 
 	// Create a process that will generate various events
-	process := consolestream.NewPipeProcess("go", []string{"run", "cmd/tester/main.go", "--duration=3s", "--stdout-rate=2", "--stderr-rate=1"}, consolestream.WithCancellor(cancellor))
+	process := consolestream.NewProcess("go", []string{"run", "cmd/tester/main.go", "--duration=3s", "--stdout-rate=2", "--stderr-rate=1"}, consolestream.WithCancellor(cancellor))
 
 	// Create context with timeout
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -35,7 +35,7 @@ func main() {
 
 		// Example of uniform handling using EventType()
 		switch part.EventType() {
-		case consolestream.PipeOutputEvent, consolestream.ProcessStartEvent,
+		case consolestream.OutputEvent, consolestream.ProcessStartEvent,
 			consolestream.ProcessEndEvent, consolestream.ProcessErrorEvent:
 			// Log all important events
 			fmt.Printf("Event %d: %s\n", eventCount, part.String())
@@ -49,7 +49,7 @@ func main() {
 	fmt.Printf("\n=== Example 2: JSON Serialization using EventType() ===")
 
 	// Create another process for JSON example
-	process2 := consolestream.NewPipeProcess("echo", []string{"JSON example"}, consolestream.WithCancellor(cancellor))
+	process2 := consolestream.NewProcess("echo", []string{"JSON example"}, consolestream.WithCancellor(cancellor))
 
 	for part, err := range process2.ExecuteAndStream(ctx) {
 		if err != nil {
@@ -76,7 +76,7 @@ func main() {
 	fmt.Printf("\n=== Example 3: Event Filtering using EventType() ===")
 
 	// Create another process for filtering example
-	process3 := consolestream.NewPipeProcess("go", []string{"run", "cmd/tester/main.go", "--duration=2s", "--stdout-rate=3"}, consolestream.WithCancellor(cancellor))
+	process3 := consolestream.NewProcess("go", []string{"run", "cmd/tester/main.go", "--duration=2s", "--stdout-rate=3"}, consolestream.WithCancellor(cancellor))
 
 	outputEventCount := 0
 	for part, err := range process3.ExecuteAndStream(ctx) {
@@ -85,11 +85,11 @@ func main() {
 		}
 
 		// Only process output events, ignore lifecycle and heartbeats
-		if part.EventType() == consolestream.PipeOutputEvent {
+		if part.EventType() == consolestream.OutputEvent {
 			outputEventCount++
-			event := part.Event.(*consolestream.PipeOutputData)
-			fmt.Printf("Output %d [%s]: %d bytes\n",
-				outputEventCount, event.Stream.String(), len(event.Data))
+			event := part.Event.(*consolestream.OutputData)
+			fmt.Printf("Output %d [OUTPUT]: %d bytes\n",
+				outputEventCount, len(event.Data))
 		}
 
 		// Stop after process completes

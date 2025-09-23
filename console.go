@@ -12,9 +12,29 @@ import (
 type ProcessOption func(*processConfig)
 
 // processConfig holds configuration options for processes
+// ProcessMode defines whether to use PTY or pipe mode for process execution
+type ProcessMode int
+
+const (
+	PipeMode ProcessMode = iota
+	PTYMode
+)
+
+func (m ProcessMode) String() string {
+	switch m {
+	case PipeMode:
+		return "PIPE"
+	case PTYMode:
+		return "PTY"
+	default:
+		return "UNKNOWN"
+	}
+}
+
 type processConfig struct {
 	cancellor       Cancellor
 	env             []string
+	mode            ProcessMode   // PTY or Pipe mode
 	ptySize         any           // Uses any to avoid dependency on pty package
 	flushInterval   time.Duration // How often to flush buffers
 	maxBufferSize   int           // Maximum buffer size before forced flush
@@ -26,6 +46,10 @@ type processConfig struct {
 func (cfg *processConfig) applyDefaults() {
 	if cfg.cancellor == nil {
 		cfg.cancellor = NewLocalCancellor(5 * time.Second)
+	}
+	// Default to pipe mode for backward compatibility
+	if cfg.mode == 0 {
+		cfg.mode = PipeMode
 	}
 	if cfg.flushInterval == 0 {
 		cfg.flushInterval = time.Second // Default 1-second flush interval
@@ -96,21 +120,17 @@ func WithMetricsInterval(interval time.Duration) ProcessOption {
 	}
 }
 
-type StreamType int
+// WithPipeMode sets the process to use standard pipes (stdout/stderr)
+func WithPipeMode() ProcessOption {
+	return func(cfg *processConfig) {
+		cfg.mode = PipeMode
+	}
+}
 
-const (
-	Stdout StreamType = iota
-	Stderr
-)
-
-func (s StreamType) String() string {
-	switch s {
-	case Stdout:
-		return "STDOUT"
-	case Stderr:
-		return "STDERR"
-	default:
-		return "UNKNOWN"
+// WithPTYMode sets the process to use a pseudo-terminal
+func WithPTYMode() ProcessOption {
+	return func(cfg *processConfig) {
+		cfg.mode = PTYMode
 	}
 }
 
@@ -128,15 +148,14 @@ const (
 	ProcessEndEvent
 	ProcessErrorEvent
 	HeartbeatEventType
-	PipeOutputEvent
-	PTYOutputEvent
+	OutputEvent
 	TerminalResizeEventType
 )
 
 func (e EventType) String() string {
 	switch e {
-	case PipeOutputEvent:
-		return "PIPE_OUTPUT"
+	case OutputEvent:
+		return "OUTPUT"
 	case ProcessStartEvent:
 		return "PROCESS_START"
 	case ProcessEndEvent:
@@ -145,8 +164,6 @@ func (e EventType) String() string {
 		return "PROCESS_ERROR"
 	case HeartbeatEventType:
 		return "HEARTBEAT"
-	case PTYOutputEvent:
-		return "PTY_OUTPUT"
 	case TerminalResizeEventType:
 		return "TERMINAL_RESIZE"
 	default:
@@ -169,18 +186,17 @@ func (e Event) String() string {
 	return fmt.Sprintf("[%s] %s: %s", e.EventType().String(), e.Timestamp.Format("15:04:05.000"), e.Event.String())
 }
 
-// PipeOutputData represents stdout/stderr data from the process
-type PipeOutputData struct {
-	Data   []byte
-	Stream StreamType
+// OutputData represents output data from the process (combined stdout/stderr)
+type OutputData struct {
+	Data []byte
 }
 
-func (o *PipeOutputData) Type() EventType {
-	return PipeOutputEvent
+func (o *OutputData) Type() EventType {
+	return OutputEvent
 }
 
-func (o *PipeOutputData) String() string {
-	return fmt.Sprintf("OutputData{Stream: %s, Size: %d bytes}", o.Stream.String(), len(o.Data))
+func (o *OutputData) String() string {
+	return fmt.Sprintf("OutputData{Size: %d bytes}", len(o.Data))
 }
 
 // ProcessStart represents the beginning of process execution
@@ -266,12 +282,8 @@ func IsProcessLifecycleEvent(event StreamEvent) bool {
 	return eventType == ProcessStartEvent || eventType == ProcessEndEvent || eventType == ProcessErrorEvent
 }
 
-func IsPipeOutputEvent(event StreamEvent) bool {
-	return event.Type() == PipeOutputEvent
-}
-
-func IsPTYOutputEvent(event StreamEvent) bool {
-	return event.Type() == PTYOutputEvent
+func IsOutputEvent(event StreamEvent) bool {
+	return event.Type() == OutputEvent
 }
 
 func IsTerminalResizeEvent(event StreamEvent) bool {

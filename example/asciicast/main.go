@@ -21,8 +21,9 @@ func main() {
 
 	// Create PTY process with known terminal size
 	size := pty.Winsize{Rows: 24, Cols: 80}
-	process := consolestream.NewPTYProcess("echo", []string{"Hello from asciicast!"},
+	process := consolestream.NewProcess("echo", []string{"Hello from asciicast!"},
 		consolestream.WithCancellor(cancellor),
+		consolestream.WithPTYMode(),
 		consolestream.WithPTYSize(size))
 
 	// Execute and get events
@@ -87,7 +88,7 @@ func main() {
 	// Example 2: Interactive command with colors
 	fmt.Println("\n2. Recording an interactive command with colors...")
 
-	process2 := consolestream.NewPTYProcess("bash", []string{"-c", `
+	process2 := consolestream.NewProcess("bash", []string{"-c", `
 echo -e "\033[32mStarting colored demo...\033[0m"
 echo -e "\033[34mThis is blue text\033[0m"
 echo -e "\033[31mThis is red text\033[0m"
@@ -130,7 +131,7 @@ echo -e "\033[33mDemo completed!\033[0m"
 
 	// Start with smaller size
 	smallSize := pty.Winsize{Rows: 20, Cols: 60}
-	process3 := consolestream.NewPTYProcess("bash", []string{"-c", "tput cols && tput lines && echo 'Terminal info displayed'"},
+	process3 := consolestream.NewProcess("bash", []string{"-c", "tput cols && tput lines && echo 'Terminal info displayed'"},
 		consolestream.WithCancellor(cancellor),
 		consolestream.WithPTYSize(smallSize))
 

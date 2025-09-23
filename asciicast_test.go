@@ -165,7 +165,7 @@ func TestToAscicastV3(t *testing.T) {
 			// First PTY output event - this sets session start
 			if !yield(Event{
 				Timestamp: sessionStart,
-				Event:     &PTYOutputData{Data: "Hello\n"},
+				Event:     &OutputData{Data: []byte("Hello\n")},
 			}, nil) {
 				return
 			}
@@ -253,7 +253,7 @@ func TestToAscicastV3(t *testing.T) {
 
 			if !yield(Event{
 				Timestamp: sessionStart.Add(100 * time.Millisecond),
-				Event:     &PipeOutputData{Data: []byte("pipe output"), Stream: Stdout},
+				Event:     &OutputData{Data: []byte("pipe output")},
 			}, nil) {
 				return
 			}
@@ -261,7 +261,7 @@ func TestToAscicastV3(t *testing.T) {
 			// This should be included
 			if !yield(Event{
 				Timestamp: sessionStart.Add(200 * time.Millisecond),
-				Event:     &PTYOutputData{Data: "pty output"},
+				Event:     &OutputData{Data: []byte("pty output")},
 			}, nil) {
 				return
 			}
@@ -280,17 +280,22 @@ func TestToAscicastV3(t *testing.T) {
 		}
 
 		lines := collectAscicastLines(ToAscicastV3(events, metadata))
-		require.Len(t, lines, 3) // header + PTY output + exit event
+		require.Len(t, lines, 4) // header + pipe output + pty output + exit event
 
-		// Verify only PTY output and exit events are present
-		eventData, err := lines[1].MarshalJSON()
+		// Verify both output events are present
+		event1Data, err := lines[1].MarshalJSON()
 		require.NoError(t, err)
-		require.Contains(t, string(eventData), `"o"`)
-		require.Contains(t, string(eventData), `"pty output"`)
+		require.Contains(t, string(event1Data), `"o"`)
+		require.Contains(t, string(event1Data), `"pipe output"`)
 
-		eventData, err = lines[2].MarshalJSON()
+		event2Data, err := lines[2].MarshalJSON()
 		require.NoError(t, err)
-		require.Contains(t, string(eventData), `"x"`)
+		require.Contains(t, string(event2Data), `"o"`)
+		require.Contains(t, string(event2Data), `"pty output"`)
+
+		exitData, err := lines[3].MarshalJSON()
+		require.NoError(t, err)
+		require.Contains(t, string(exitData), `"x"`)
 	})
 
 	t.Run("handles error propagation", func(t *testing.T) {
@@ -326,7 +331,7 @@ func TestToAscicastV3(t *testing.T) {
 		events := func(yield func(Event, error) bool) {
 			if !yield(Event{
 				Timestamp: sessionStart,
-				Event:     &PTYOutputData{Data: "before exit"},
+				Event:     &OutputData{Data: []byte("before exit")},
 			}, nil) {
 				return
 			}
@@ -341,7 +346,7 @@ func TestToAscicastV3(t *testing.T) {
 			// This should not be processed
 			if !yield(Event{
 				Timestamp: sessionStart.Add(200 * time.Millisecond),
-				Event:     &PTYOutputData{Data: "after exit"},
+				Event:     &OutputData{Data: []byte("after exit")},
 			}, nil) {
 				return
 			}
@@ -365,7 +370,7 @@ func TestWriteAscicastV3(t *testing.T) {
 		events := func(yield func(Event, error) bool) {
 			if !yield(Event{
 				Timestamp: sessionStart,
-				Event:     &PTYOutputData{Data: "test output"},
+				Event:     &OutputData{Data: []byte("test output")},
 			}, nil) {
 				return
 			}
@@ -427,7 +432,7 @@ func TestWriteAscicastV3(t *testing.T) {
 		events := func(yield func(Event, error) bool) {
 			if !yield(Event{
 				Timestamp: time.Now(),
-				Event:     &PTYOutputData{Data: "test"},
+				Event:     &OutputData{Data: []byte("test")},
 			}, nil) {
 				return
 			}
