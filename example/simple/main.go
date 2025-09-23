@@ -14,7 +14,7 @@ func main() {
 	cancellor := consolestream.NewLocalCancellor(5 * time.Second)
 
 	// Create a process that will echo some text using functional options
-	process := consolestream.NewPipeProcess("echo", []string{"Hello, World!"}, consolestream.WithCancellor(cancellor))
+	process := consolestream.NewProcess("echo", []string{"Hello, World!"}, consolestream.WithCancellor(cancellor))
 
 	// Create context with timeout
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -29,9 +29,9 @@ func main() {
 		}
 
 		switch part.EventType() {
-		case consolestream.PipeOutputEvent:
-			event := part.Event.(*consolestream.PipeOutputData)
-			fmt.Printf("[%s] %s: %s", event.Stream.String(), part.Timestamp.Format("15:04:05"), string(event.Data))
+		case consolestream.OutputEvent:
+			event := part.Event.(*consolestream.OutputData)
+			fmt.Printf("[OUTPUT] %s: %s", part.Timestamp.Format("15:04:05"), string(event.Data))
 		case consolestream.ProcessStartEvent:
 			event := part.Event.(*consolestream.ProcessStart)
 			fmt.Printf("Process started (PID: %d)\n", event.PID)

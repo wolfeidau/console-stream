@@ -14,7 +14,7 @@ func main() {
 	cancellor := consolestream.NewLocalCancellor(5 * time.Second)
 
 	// Create a process that will generate output over time
-	process := consolestream.NewPipeProcess("go", []string{"run", "cmd/tester/main.go", "--duration=5s", "--stdout-rate=3", "--stderr-rate=2"}, consolestream.WithCancellor(cancellor))
+	process := consolestream.NewProcess("go", []string{"run", "cmd/tester/main.go", "--duration=5s", "--stdout-rate=3", "--stderr-rate=2"}, consolestream.WithCancellor(cancellor))
 
 	// Create context with timeout
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -32,10 +32,10 @@ func main() {
 
 		partCount++
 		switch event := part.Event.(type) {
-		case *consolestream.PipeOutputData:
+		case *consolestream.OutputData:
 			outputCount++
-			fmt.Printf("Part %d [%s] %s: %d bytes\n%s\n",
-				outputCount, event.Stream.String(), part.Timestamp.Format("15:04:05.000"), len(event.Data), string(event.Data))
+			fmt.Printf("Part %d [OUTPUT] %s: %d bytes\n%s\n",
+				outputCount, part.Timestamp.Format("15:04:05.000"), len(event.Data), string(event.Data))
 		case *consolestream.ProcessStart:
 			fmt.Printf("Event %d: Process started (PID: %d, Command: %s)\n", partCount, event.PID, event.Command)
 		case *consolestream.ProcessEnd:

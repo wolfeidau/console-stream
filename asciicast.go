@@ -119,8 +119,8 @@ func ToAscicastV3(events iter.Seq2[Event, error], metadata AscicastV3Metadata) i
 
 			// Transform based on event type
 			switch e := event.Event.(type) {
-			case *PTYOutputData:
-				if !yield(NewOutputEvent(interval, e.Data), nil) {
+			case *OutputData:
+				if !yield(NewOutputEvent(interval, string(e.Data)), nil) {
 					return
 				}
 
@@ -136,7 +136,7 @@ func ToAscicastV3(events iter.Seq2[Event, error], metadata AscicastV3Metadata) i
 				return // Exit event ends the session
 
 			// Filter out console-stream internal events
-			case *ProcessStart, *ProcessError, *HeartbeatEvent, *PipeOutputData:
+			case *ProcessStart, *ProcessError, *HeartbeatEvent:
 				// Skip these events as they don't map to asciicast format
 				continue
 
