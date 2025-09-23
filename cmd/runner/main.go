@@ -552,7 +552,7 @@ func formatAscicastOutput(events iter.Seq2[consolestream.Event, error], writer i
 func printProcessStats(processResult *ProcessResult, logger *slog.Logger) {
 	// Try to get stats from PTY process
 	if ptyProcess, ok := processResult.Process.(interface {
-		GetStats() consolestream.PTYStatsSnapshot
+		GetStats() consolestream.ProcessStatsSnapshot
 	}); ok {
 		stats := ptyProcess.GetStats()
 

@@ -23,8 +23,8 @@ type ProcessInfo struct {
 	PID     int
 }
 
-// PTYStatsSnapshot represents a point-in-time view of process statistics
-type PTYStatsSnapshot struct {
+// ProcessStatsSnapshot represents a point-in-time view of process statistics
+type ProcessStatsSnapshot struct {
 	// Basic execution stats
 	StartTime  time.Time
 	EventCount int
@@ -36,8 +36,8 @@ type PTYStatsSnapshot struct {
 	metricsInterval time.Duration
 }
 
-// PTYStats manages comprehensive metrics during process execution
-type PTYStats struct {
+// ProcessStats manages comprehensive metrics during process execution
+type ProcessStats struct {
 	// Basic execution stats
 	startTime  time.Time
 	eventCount int
@@ -103,7 +103,7 @@ type Process struct {
 	stderrBuffer []byte
 
 	// Metrics and observability (optional)
-	stats *PTYStats
+	stats *ProcessStats
 
 	waiter sync.WaitGroup
 }
@@ -144,7 +144,7 @@ func NewProcess(cmd string, args []string, opts ...ProcessOption) *Process {
 				// PID will be set later when process starts
 			}
 
-			stats, err := NewPTYStats(meter, cfg.metricsInterval, processInfo)
+			stats, err := NewProcessStats(meter, cfg.metricsInterval, processInfo)
 			if err == nil {
 				process.stats = stats
 			}
@@ -702,21 +702,21 @@ func (p *Process) readPipeStream(ctx context.Context, pipe io.ReadCloser, flushC
 }
 
 // GetStats returns a copy of the current process statistics
-func (p *Process) GetStats() PTYStatsSnapshot {
+func (p *Process) GetStats() ProcessStatsSnapshot {
 	if p.stats == nil {
-		return PTYStatsSnapshot{}
+		return ProcessStatsSnapshot{}
 	}
 
 	return p.stats.GetSnapshot()
 }
 
-// NewPTYStats creates a new PTYStats instance with OpenTelemetry metrics
-func NewPTYStats(meter metric.Meter, interval time.Duration, processInfo ProcessInfo) (*PTYStats, error) {
+// NewProcessStats creates a new ProcessStats instance with OpenTelemetry metrics
+func NewProcessStats(meter metric.Meter, interval time.Duration, processInfo ProcessInfo) (*ProcessStats, error) {
 	if meter == nil {
 		return nil, fmt.Errorf("meter cannot be nil")
 	}
 
-	stats := &PTYStats{
+	stats := &ProcessStats{
 		metricsInterval: interval,
 		processInfo:     processInfo,
 	}
@@ -765,7 +765,7 @@ func NewPTYStats(meter metric.Meter, interval time.Duration, processInfo Process
 }
 
 // Start initializes the stats and records process start
-func (s *PTYStats) Start(ctx context.Context) {
+func (s *ProcessStats) Start(ctx context.Context) {
 	s.mutex.Lock()
 	s.startTime = time.Now()
 	s.mutex.Unlock()
@@ -782,7 +782,7 @@ func (s *PTYStats) Start(ctx context.Context) {
 }
 
 // Stop finalizes the stats and records process stop
-func (s *PTYStats) Stop(ctx context.Context) {
+func (s *ProcessStats) Stop(ctx context.Context) {
 	s.mutex.Lock()
 	s.duration = time.Since(s.startTime)
 	s.mutex.Unlock()
@@ -799,14 +799,14 @@ func (s *PTYStats) Stop(ctx context.Context) {
 }
 
 // SetExitCode sets the process exit code
-func (s *PTYStats) SetExitCode(code int) {
+func (s *ProcessStats) SetExitCode(code int) {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 	s.exitCode = &code
 }
 
 // RecordError increments the error count
-func (s *PTYStats) RecordError(ctx context.Context, eventType string) {
+func (s *ProcessStats) RecordError(ctx context.Context, eventType string) {
 	s.mutex.Lock()
 	s.errorCount++
 	s.eventCount++
@@ -825,7 +825,7 @@ func (s *PTYStats) RecordError(ctx context.Context, eventType string) {
 }
 
 // RecordEvent records a general event
-func (s *PTYStats) RecordEvent(ctx context.Context, eventType string) {
+func (s *ProcessStats) RecordEvent(ctx context.Context, eventType string) {
 	s.mutex.Lock()
 	s.eventCount++
 	s.mutex.Unlock()
@@ -843,7 +843,7 @@ func (s *PTYStats) RecordEvent(ctx context.Context, eventType string) {
 }
 
 // RecordOutput records output data and metrics
-func (s *PTYStats) RecordOutput(ctx context.Context, dataSize int64) {
+func (s *ProcessStats) RecordOutput(ctx context.Context, dataSize int64) {
 	s.mutex.Lock()
 	s.eventCount++
 	s.mutex.Unlock()
@@ -871,12 +871,12 @@ func (s *PTYStats) RecordOutput(ctx context.Context, dataSize int64) {
 }
 
 // GetSnapshot returns a thread-safe snapshot of the current statistics
-func (s *PTYStats) GetSnapshot() PTYStatsSnapshot {
+func (s *ProcessStats) GetSnapshot() ProcessStatsSnapshot {
 	s.mutex.RLock()
 	defer s.mutex.RUnlock()
 
 	// Create a deep copy to avoid race conditions
-	snapshot := PTYStatsSnapshot{
+	snapshot := ProcessStatsSnapshot{
 		StartTime:       s.startTime,
 		EventCount:      s.eventCount,
 		ErrorCount:      s.errorCount,
