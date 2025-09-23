@@ -16,19 +16,19 @@ func TestPTYOutputData(t *testing.T) {
 	t.Parallel()
 
 	t.Run("Type returns PTYOutputEvent", func(t *testing.T) {
-		data := &PTYOutputData{Data: []byte("test")}
+		data := &PTYOutputData{Data: "test"}
 		require.Equal(t, PTYOutputEvent, data.Type())
 	})
 
 	t.Run("String representation includes data size", func(t *testing.T) {
-		data := &PTYOutputData{Data: []byte("hello world")}
+		data := &PTYOutputData{Data: "hello world"}
 		str := data.String()
 		require.Contains(t, str, "PTYOutputData")
 		require.Contains(t, str, "11 bytes")
 	})
 
 	t.Run("String representation with empty data", func(t *testing.T) {
-		data := &PTYOutputData{Data: []byte{}}
+		data := &PTYOutputData{Data: ""}
 		str := data.String()
 		require.Contains(t, str, "PTYOutputData")
 		require.Contains(t, str, "0 bytes")

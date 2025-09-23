@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"iter"
+	"maps"
 	"strconv"
 	"time"
 )
@@ -54,9 +55,7 @@ func (h AscicastV3Header) MarshalJSON() ([]byte, error) {
 	}
 
 	// Merge maps
-	for k, v := range metadataMap {
-		result[k] = v
-	}
+	maps.Copy(result, metadataMap)
 
 	return json.Marshal(result)
 }
@@ -70,8 +69,8 @@ func (e AscicastV3Event) MarshalJSON() ([]byte, error) {
 }
 
 // NewOutputEvent creates an asciicast output event
-func NewOutputEvent(interval float64, data []byte) AscicastV3Event {
-	return AscicastV3Event{interval, "o", string(data)}
+func NewOutputEvent(interval float64, data string) AscicastV3Event {
+	return AscicastV3Event{interval, "o", data}
 }
 
 // NewResizeEvent creates an asciicast resize event

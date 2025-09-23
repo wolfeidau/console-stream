@@ -95,7 +95,7 @@ func TestAscicastV3EventMarshalJSON(t *testing.T) {
 	t.Parallel()
 
 	t.Run("output event", func(t *testing.T) {
-		event := NewOutputEvent(1.234567, []byte("Hello World!\n"))
+		event := NewOutputEvent(1.234567, "Hello World!\n")
 
 		data, err := event.MarshalJSON()
 		require.NoError(t, err)
@@ -165,7 +165,7 @@ func TestToAscicastV3(t *testing.T) {
 			// First PTY output event - this sets session start
 			if !yield(Event{
 				Timestamp: sessionStart,
-				Event:     &PTYOutputData{Data: []byte("Hello\n")},
+				Event:     &PTYOutputData{Data: "Hello\n"},
 			}, nil) {
 				return
 			}
@@ -261,7 +261,7 @@ func TestToAscicastV3(t *testing.T) {
 			// This should be included
 			if !yield(Event{
 				Timestamp: sessionStart.Add(200 * time.Millisecond),
-				Event:     &PTYOutputData{Data: []byte("pty output")},
+				Event:     &PTYOutputData{Data: "pty output"},
 			}, nil) {
 				return
 			}
@@ -326,7 +326,7 @@ func TestToAscicastV3(t *testing.T) {
 		events := func(yield func(Event, error) bool) {
 			if !yield(Event{
 				Timestamp: sessionStart,
-				Event:     &PTYOutputData{Data: []byte("before exit")},
+				Event:     &PTYOutputData{Data: "before exit"},
 			}, nil) {
 				return
 			}
@@ -341,7 +341,7 @@ func TestToAscicastV3(t *testing.T) {
 			// This should not be processed
 			if !yield(Event{
 				Timestamp: sessionStart.Add(200 * time.Millisecond),
-				Event:     &PTYOutputData{Data: []byte("after exit")},
+				Event:     &PTYOutputData{Data: "after exit"},
 			}, nil) {
 				return
 			}
@@ -365,7 +365,7 @@ func TestWriteAscicastV3(t *testing.T) {
 		events := func(yield func(Event, error) bool) {
 			if !yield(Event{
 				Timestamp: sessionStart,
-				Event:     &PTYOutputData{Data: []byte("test output")},
+				Event:     &PTYOutputData{Data: "test output"},
 			}, nil) {
 				return
 			}
@@ -427,7 +427,7 @@ func TestWriteAscicastV3(t *testing.T) {
 		events := func(yield func(Event, error) bool) {
 			if !yield(Event{
 				Timestamp: time.Now(),
-				Event:     &PTYOutputData{Data: []byte("test")},
+				Event:     &PTYOutputData{Data: "test"},
 			}, nil) {
 				return
 			}
