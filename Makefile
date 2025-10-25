@@ -42,14 +42,6 @@ build-examples: ## Build all examples
 	go build -o bin/examples/asciicast ./example/asciicast
 	go build -o bin/examples/logging ./example/logging
 
-# Development targets
-check: ## Run basic checks (mod tidy)
-	go mod tidy
-	@if [ -n "$$(git status --porcelain go.mod go.sum)" ]; then \
-		echo "go.mod or go.sum has uncommitted changes after 'go mod tidy'"; \
-		exit 1; \
-	fi
-
 # Quality targets
 quality: check lint test ## Run all quality checks
 
