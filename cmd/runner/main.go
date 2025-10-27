@@ -270,7 +270,18 @@ func loadConfig(configPath string) (*Config, error) {
 		config.PTYSize = &PTYSize{Rows: 24, Cols: 80}
 	}
 
+	// Interpolate environment variables
+	interpolateEnvVars(&config)
+
 	return &config, nil
+}
+
+// interpolateEnvVars expands environment variables in config values
+// Supports $VAR and ${VAR} syntax
+func interpolateEnvVars(config *Config) {
+	for key, value := range config.Env {
+		config.Env[key] = os.ExpandEnv(value)
+	}
 }
 
 func executeProcess(ctx context.Context, config *Config, format string, enableMetrics bool, logger *slog.Logger) (iter.Seq2[consolestream.Event, error], *ProcessResult, error) {
