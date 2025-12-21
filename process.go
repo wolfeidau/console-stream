@@ -131,6 +131,7 @@ func NewProcess(cmd string, args []string, opts ...ProcessOption) *Process {
 		mode:          cfg.mode,
 		cancellor:     cfg.cancellor,
 		env:           cfg.env,
+		workingDir:    cfg.workingDir,
 		ptySize:       ptySize,
 		flushInterval: cfg.flushInterval,
 		maxBufferSize: cfg.maxBufferSize,
@@ -392,6 +393,9 @@ func (p *Process) executePipeMode(ctx context.Context) iter.Seq2[Event, error] {
 		cmd := exec.CommandContext(ctx, p.cmd, p.args...)
 		if len(p.env) > 0 {
 			cmd.Env = p.env
+		}
+		if p.workingDir != "" {
+			cmd.Dir = p.workingDir
 		}
 
 		// Get stdout and stderr pipes
