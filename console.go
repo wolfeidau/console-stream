@@ -34,6 +34,7 @@ func (m ProcessMode) String() string {
 type processConfig struct {
 	cancellor       Cancellor
 	env             []string
+	workingDir      string
 	mode            ProcessMode   // PTY or Pipe mode
 	ptySize         any           // Uses any to avoid dependency on pty package
 	flushInterval   time.Duration // How often to flush buffers
@@ -89,6 +90,13 @@ func WithEnvMap(envMap map[string]string) ProcessOption {
 		for key, value := range envMap {
 			cfg.env = append(cfg.env, key+"="+value)
 		}
+	}
+}
+
+// WithWorkingDir sets the working directory for the process
+func WithWorkingDir(dir string) ProcessOption {
+	return func(cfg *processConfig) {
+		cfg.workingDir = dir
 	}
 }
 

@@ -90,6 +90,7 @@ type Process struct {
 	mode          ProcessMode
 	cancellor     Cancellor
 	env           []string
+	workingDir    string
 	ptySize       *pty.Winsize
 	flushInterval time.Duration
 	maxBufferSize int
@@ -171,6 +172,9 @@ func (p *Process) executePTYMode(ctx context.Context) iter.Seq2[Event, error] {
 		cmd := exec.CommandContext(ctx, p.cmd, p.args...)
 		if len(p.env) > 0 {
 			cmd.Env = p.env
+		}
+		if p.workingDir != "" {
+			cmd.Dir = p.workingDir
 		}
 
 		// Start the command with PTY
