@@ -385,3 +385,68 @@ func TestContainerProcessConcurrent(t *testing.T) {
 		}
 	}
 }
+
+func TestContainerProcessImagePull(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping container test in short mode")
+	}
+
+	t.Parallel()
+
+	// Use a specific versioned image that's unlikely to be cached locally
+	// This tests automatic image pulling
+	process := NewContainerProcess("echo", []string{"pulled successfully"},
+		WithContainerImage("alpine:3.19.0"))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+
+	var events []Event
+	var foundPullStart bool
+	var foundPullComplete bool
+	var output string
+
+	for event, err := range process.ExecuteAndStream(ctx) {
+		require.NoError(t, err)
+		events = append(events, event)
+
+		switch event.EventType() {
+		case ImagePullStartEvent:
+			foundPullStart = true
+			pullStart := event.Event.(*ImagePullStart)
+			require.Equal(t, "alpine:3.19.0", pullStart.Image)
+			t.Logf("Image pull started: %s", pullStart.Image)
+
+		case ImagePullProgressEvent:
+			progress := event.Event.(*ImagePullProgress)
+			t.Logf("Pull progress: %d%% (%d/%d bytes)",
+				progress.PercentComplete, progress.BytesDownloaded, progress.BytesTotal)
+
+		case ImagePullCompleteEvent:
+			foundPullComplete = true
+			pullComplete := event.Event.(*ImagePullComplete)
+			t.Logf("Image pull complete: %s (digest: %s)", pullComplete.Image, pullComplete.Digest)
+
+		case OutputEvent:
+			data := event.Event.(*OutputData)
+			output += string(data.Data)
+
+		case ProcessEndEvent:
+			goto done
+		}
+	}
+
+done:
+	// Note: Pull events only occur if image wasn't already cached
+	// So we don't require them, but we log them if they occurred
+	if foundPullStart {
+		t.Log("Image pull was triggered (image not cached)")
+		require.True(t, foundPullComplete, "Should have ImagePullComplete if pull started")
+	} else {
+		t.Log("Image was already cached (no pull needed)")
+	}
+
+	// Always verify the container ran successfully
+	require.Contains(t, output, "pulled successfully")
+	require.GreaterOrEqual(t, len(events), 3, "Should have at least ContainerCreate, ProcessStart, ProcessEnd")
+}

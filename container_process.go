@@ -1,13 +1,18 @@
 package consolestream
 
 import (
+	"bufio"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"iter"
+	"strings"
 	"time"
 
+	cerrdefs "github.com/containerd/errdefs"
 	"github.com/docker/docker/api/types/container"
+	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/client"
 	"github.com/docker/docker/pkg/stdcopy"
 	"go.opentelemetry.io/otel/metric"
@@ -103,14 +108,36 @@ func (cp *ContainerProcess) ExecuteAndStream(ctx context.Context) iter.Seq2[Even
 		}
 		defer dockerClient.Close()
 
-		// 2. Create container
+		// 2. Create container (with automatic image pull if needed)
 		containerID, err := cp.createContainer(ctx, dockerClient)
 		if err != nil {
-			yield(newEvent(&ProcessError{
-				Error:   err,
-				Message: "Failed to create container",
-			}), ProcessStartError{Cmd: cp.cmd, Err: err})
-			return
+			// Check if error is due to missing image
+			if cerrdefs.IsNotFound(err) {
+				// Pull the image with progress tracking
+				if pullErr := cp.pullImageWithProgress(ctx, dockerClient, yield); pullErr != nil {
+					yield(newEvent(&ProcessError{
+						Error:   pullErr,
+						Message: "Failed to pull container image",
+					}), ProcessStartError{Cmd: cp.cmd, Err: pullErr})
+					return
+				}
+
+				// Retry container creation after successful pull
+				containerID, err = cp.createContainer(ctx, dockerClient)
+				if err != nil {
+					yield(newEvent(&ProcessError{
+						Error:   err,
+						Message: "Failed to create container after image pull",
+					}), ProcessStartError{Cmd: cp.cmd, Err: err})
+					return
+				}
+			} else {
+				yield(newEvent(&ProcessError{
+					Error:   err,
+					Message: "Failed to create container",
+				}), ProcessStartError{Cmd: cp.cmd, Err: err})
+				return
+			}
 		}
 		cp.containerID = containerID
 
@@ -402,6 +429,108 @@ func (cp *ContainerProcess) streamContainerLogs(
 			}
 		}
 	}
+}
+
+// pullProgress represents a single line of JSON progress from Docker's ImagePull
+type pullProgress struct {
+	Status         string `json:"status"`
+	ID             string `json:"id,omitempty"`
+	Progress       string `json:"progress,omitempty"`
+	ProgressDetail struct {
+		Current int64 `json:"current"`
+		Total   int64 `json:"total"`
+	} `json:"progressDetail,omitempty"`
+	Error string `json:"error,omitempty"`
+}
+
+// pullImageWithProgress pulls a Docker image and emits progress events
+func (cp *ContainerProcess) pullImageWithProgress(
+	ctx context.Context,
+	dockerClient *client.Client,
+	yield func(Event, error) bool,
+) error {
+	// Emit pull start event
+	if !yield(newEvent(&ImagePullStart{
+		Image: cp.image,
+	}), nil) {
+		return fmt.Errorf("cancelled during image pull start")
+	}
+
+	// Pull the image
+	pullReader, err := dockerClient.ImagePull(ctx, cp.image, image.PullOptions{})
+	if err != nil {
+		return fmt.Errorf("failed to pull image %s: %w", cp.image, err)
+	}
+	defer pullReader.Close()
+
+	// Track overall progress across all layers
+	layerProgress := make(map[string]*pullProgress)
+	var lastProgressEmit time.Time
+	var digest string
+
+	scanner := bufio.NewScanner(pullReader)
+	for scanner.Scan() {
+		var progress pullProgress
+		if err := json.Unmarshal(scanner.Bytes(), &progress); err != nil {
+			continue // Skip malformed lines
+		}
+
+		// Check for errors
+		if progress.Error != "" {
+			return fmt.Errorf("image pull failed: %s", progress.Error)
+		}
+
+		// Track layer progress
+		if progress.ID != "" && progress.ProgressDetail.Total > 0 {
+			layerProgress[progress.ID] = &progress
+		}
+
+		// Extract digest from final status message
+		if strings.HasPrefix(progress.Status, "Digest: sha256:") {
+			digest = strings.TrimPrefix(progress.Status, "Digest: ")
+		}
+
+		// Emit progress events periodically (every 2 seconds or 10% progress change)
+		now := time.Now()
+		if now.Sub(lastProgressEmit) >= 2*time.Second {
+			totalBytes := int64(0)
+			currentBytes := int64(0)
+
+			for _, layer := range layerProgress {
+				totalBytes += layer.ProgressDetail.Total
+				currentBytes += layer.ProgressDetail.Current
+			}
+
+			percentComplete := 0
+			if totalBytes > 0 {
+				percentComplete = int((currentBytes * 100) / totalBytes)
+			}
+
+			if !yield(newEvent(&ImagePullProgress{
+				Image:           cp.image,
+				Status:          progress.Status,
+				PercentComplete: percentComplete,
+				BytesDownloaded: currentBytes,
+				BytesTotal:      totalBytes,
+			}), nil) {
+				return fmt.Errorf("cancelled during image pull")
+			}
+
+			lastProgressEmit = now
+		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		return fmt.Errorf("error reading pull progress: %w", err)
+	}
+
+	// Emit completion event
+	yield(newEvent(&ImagePullComplete{
+		Image:  cp.image,
+		Digest: digest,
+	}), nil)
+
+	return nil
 }
 
 // removeContainer removes a container with silent failure handling

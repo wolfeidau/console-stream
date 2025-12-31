@@ -199,6 +199,9 @@ const (
 	TerminalResizeEventType
 	ContainerCreateEvent
 	ContainerRemoveEvent
+	ImagePullStartEvent
+	ImagePullProgressEvent
+	ImagePullCompleteEvent
 )
 
 func (e EventType) String() string {
@@ -219,6 +222,12 @@ func (e EventType) String() string {
 		return "CONTAINER_CREATE"
 	case ContainerRemoveEvent:
 		return "CONTAINER_REMOVE"
+	case ImagePullStartEvent:
+		return "IMAGE_PULL_START"
+	case ImagePullProgressEvent:
+		return "IMAGE_PULL_PROGRESS"
+	case ImagePullCompleteEvent:
+		return "IMAGE_PULL_COMPLETE"
 	default:
 		return "UNKNOWN"
 	}
@@ -339,6 +348,50 @@ func (c *ContainerRemove) Type() EventType {
 
 func (c *ContainerRemove) String() string {
 	return fmt.Sprintf("ContainerRemove{ID: %s}", c.ContainerID)
+}
+
+// ImagePullStart represents the beginning of an image pull operation
+type ImagePullStart struct {
+	Image string
+}
+
+func (i *ImagePullStart) Type() EventType {
+	return ImagePullStartEvent
+}
+
+func (i *ImagePullStart) String() string {
+	return fmt.Sprintf("ImagePullStart{Image: %s}", i.Image)
+}
+
+// ImagePullProgress represents progress during an image pull
+type ImagePullProgress struct {
+	Image           string
+	Status          string
+	PercentComplete int
+	BytesDownloaded int64
+	BytesTotal      int64
+}
+
+func (i *ImagePullProgress) Type() EventType {
+	return ImagePullProgressEvent
+}
+
+func (i *ImagePullProgress) String() string {
+	return fmt.Sprintf("ImagePullProgress{Image: %s, Status: %s, Progress: %d%%}", i.Image, i.Status, i.PercentComplete)
+}
+
+// ImagePullComplete represents successful completion of an image pull
+type ImagePullComplete struct {
+	Image  string
+	Digest string
+}
+
+func (i *ImagePullComplete) Type() EventType {
+	return ImagePullCompleteEvent
+}
+
+func (i *ImagePullComplete) String() string {
+	return fmt.Sprintf("ImagePullComplete{Image: %s, Digest: %s}", i.Image, i.Digest)
 }
 
 func IsProcessStartEvent(event StreamEvent) bool {
