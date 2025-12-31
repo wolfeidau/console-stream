@@ -171,6 +171,42 @@ type TerminalResizeEvent struct {
     Y    uint16 // Height in pixels
 }
 
+type ContainerProcess struct {
+    // Contains filtered or unexported fields
+}
+
+type ContainerMount struct {
+    Source   string
+    Target   string
+    ReadOnly bool
+}
+
+type ContainerCreate struct {
+    ContainerID string
+    Image       string
+}
+
+type ContainerRemove struct {
+    ContainerID string
+}
+
+type ImagePullStart struct {
+    Image string
+}
+
+type ImagePullProgress struct {
+    Image           string
+    Status          string
+    PercentComplete int
+    BytesDownloaded int64
+    BytesTotal      int64
+}
+
+type ImagePullComplete struct {
+    Image  string
+    Digest string
+}
+
 type StreamType int
 
 const (
@@ -208,6 +244,23 @@ func NewPTYProcessWithSize(cmd string, cancellor Cancellor, size pty.Winsize, ar
 
 // ExecuteAndStream starts a PTY process and returns an iterator over Event objects
 func (p *PTYProcess) ExecuteAndStream(ctx context.Context) iter.Seq2[Event, error]
+
+// NewContainerProcess creates a new container process with functional options
+func NewContainerProcess(cmd string, args []string, opts ...ContainerProcessOption) *ContainerProcess
+
+// ExecuteAndStream starts a container and returns an iterator over Event objects
+func (cp *ContainerProcess) ExecuteAndStream(ctx context.Context) iter.Seq2[Event, error]
+
+// Container-specific options
+func WithContainerImage(image string) ContainerProcessOption
+func WithContainerRuntime(runtime string) ContainerProcessOption
+func WithContainerMount(source, target string, readOnly bool) ContainerProcessOption
+func WithContainerEnv(env []string) ContainerProcessOption
+func WithContainerEnvMap(envMap map[string]string) ContainerProcessOption
+func WithContainerWorkingDir(dir string) ContainerProcessOption
+func WithContainerFlushInterval(interval time.Duration) ContainerProcessOption
+func WithContainerMaxBufferSize(size int) ContainerProcessOption
+func WithContainerMeter(meter any) ContainerProcessOption
 ```
 
 ### Error Types

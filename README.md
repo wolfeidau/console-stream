@@ -6,6 +6,7 @@ A Go library for executing processes and streaming their output in real-time usi
 
 - **Real-time streaming**: Process output delivered at configurable intervals or buffer limits
 - **Unified API**: Single process type supports both pipe and PTY modes
+- **Container execution**: Run processes inside Docker/Podman containers with volume mounts
 - **Event-driven**: Process lifecycle events, output data, and heartbeat monitoring
 - **Production ready**: Context cancellation, error handling, and resource cleanup
 
@@ -75,6 +76,63 @@ process := consolestream.NewProcess("npm", []string{"install"},
 | `WithFlushInterval(d)` | Output flush frequency |
 | `WithMaxBufferSize(s)` | Buffer size limit |
 
+### Container Execution
+
+Execute processes inside Docker/Podman containers with volume mounts and environment variables.
+
+**Automatic Image Pulling**: Container images are automatically pulled if not available locally, with progress events emitted every 2 seconds.
+
+```go
+// Simple container execution
+process := consolestream.NewContainerProcess("go", []string{"version"},
+    consolestream.WithContainerImage("golang:1.25"))
+
+// With volume mounts
+process := consolestream.NewContainerProcess("make", []string{"test"},
+    consolestream.WithContainerImage("golang:1.25"),
+    consolestream.WithContainerMount("/path/to/code", "/workspace", false),
+    consolestream.WithContainerWorkingDir("/workspace"),
+    consolestream.WithContainerEnvMap(map[string]string{
+        "CI": "true",
+        "GOPATH": "/go",
+    }))
+
+// Same event streaming model
+for event, err := range process.ExecuteAndStream(ctx) {
+    if err != nil {
+        break
+    }
+
+    switch e := event.Event.(type) {
+    case *consolestream.ImagePullStart:
+        fmt.Printf("Pulling image: %s\n", e.Image)
+    case *consolestream.ImagePullProgress:
+        fmt.Printf("Pull progress: %d%% (%d/%d bytes)\n",
+            e.PercentComplete, e.BytesDownloaded, e.BytesTotal)
+    case *consolestream.ImagePullComplete:
+        fmt.Printf("Pull complete: %s\n", e.Digest)
+    case *consolestream.ContainerCreate:
+        fmt.Printf("Container: %s\n", e.ContainerID)
+    case *consolestream.OutputData:
+        fmt.Print(string(e.Data))
+    case *consolestream.ProcessEnd:
+        fmt.Printf("Exit: %d\n", e.ExitCode)
+    }
+}
+```
+
+### Container Options
+
+| Option | Description |
+|--------|-------------|
+| `WithContainerImage(img)` | Container image (required) |
+| `WithContainerRuntime(r)` | Runtime: "docker" (default) or "podman" |
+| `WithContainerMount(src, dst, ro)` | Volume mount (source, target, read-only) |
+| `WithContainerWorkingDir(d)` | Working directory in container |
+| `WithContainerEnvMap(m)` | Environment variables map |
+| `WithContainerFlushInterval(d)` | Output flush frequency |
+| `WithContainerMaxBufferSize(s)` | Buffer size limit |
+
 ### Event Types
 
 | Event | Description |
@@ -85,6 +143,11 @@ process := consolestream.NewProcess("npm", []string{"install"},
 | `ProcessError` | Process execution error |
 | `HeartbeatEvent` | Keep-alive when process is silent |
 | `TerminalResizeEvent` | Terminal size change (PTY only) |
+| `ContainerCreate` | Container created with ID and image |
+| `ContainerRemove` | Container cleanup completed |
+| `ImagePullStart` | Container image pull started |
+| `ImagePullProgress` | Container image pull progress (every 2s) |
+| `ImagePullComplete` | Container image pull completed |
 
 ## Use Cases
 
@@ -97,6 +160,12 @@ process := consolestream.NewProcess("npm", []string{"install"},
 - Interactive applications (shells, editors)
 - Programs with progress bars or colors
 - Terminal session recording
+
+**Container Mode** - Use for:
+- CI/CD pipelines with isolated builds
+- Running processes in reproducible environments
+- Sandboxed execution with resource limits
+- Testing with specific runtime versions
 
 ## Asciicast Recording
 
