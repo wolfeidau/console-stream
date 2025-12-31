@@ -63,6 +63,45 @@ func (cfg *processConfig) applyDefaults() {
 	}
 }
 
+// ContainerProcessOption represents a functional option for configuring container processes
+type ContainerProcessOption func(*containerProcessConfig)
+
+// containerProcessConfig holds configuration options for container processes
+type containerProcessConfig struct {
+	// Shared options
+	cancellor       Cancellor
+	env             []string
+	workingDir      string
+	flushInterval   time.Duration
+	maxBufferSize   int
+	meter           any
+	metricsInterval time.Duration
+
+	// Container-specific options
+	image   string
+	runtime string
+	mounts  []ContainerMount
+}
+
+// applyDefaults sets sensible defaults for the container process configuration
+func (cfg *containerProcessConfig) applyDefaults() {
+	if cfg.cancellor == nil {
+		cfg.cancellor = NewLocalCancellor(5 * time.Second)
+	}
+	if cfg.runtime == "" {
+		cfg.runtime = "docker" // Default to Docker
+	}
+	if cfg.flushInterval == 0 {
+		cfg.flushInterval = time.Second // Default 1-second flush interval
+	}
+	if cfg.maxBufferSize == 0 {
+		cfg.maxBufferSize = 1024 // Default 1k buffer limit
+	}
+	if cfg.metricsInterval == 0 {
+		cfg.metricsInterval = time.Second // Default 1-second metrics aggregation
+	}
+}
+
 // WithCancellor sets a custom cancellor for the process
 func WithCancellor(cancellor Cancellor) ProcessOption {
 	return func(cfg *processConfig) {
@@ -158,6 +197,8 @@ const (
 	HeartbeatEventType
 	OutputEvent
 	TerminalResizeEventType
+	ContainerCreateEvent
+	ContainerRemoveEvent
 )
 
 func (e EventType) String() string {
@@ -174,6 +215,10 @@ func (e EventType) String() string {
 		return "HEARTBEAT"
 	case TerminalResizeEventType:
 		return "TERMINAL_RESIZE"
+	case ContainerCreateEvent:
+		return "CONTAINER_CREATE"
+	case ContainerRemoveEvent:
+		return "CONTAINER_REMOVE"
 	default:
 		return "UNKNOWN"
 	}
@@ -269,6 +314,33 @@ func (h *HeartbeatEvent) String() string {
 	return fmt.Sprintf("HeartbeatEvent{Alive: %t, Elapsed: %v}", h.ProcessAlive, h.ElapsedTime)
 }
 
+// ContainerCreate represents container creation
+type ContainerCreate struct {
+	ContainerID string
+	Image       string
+}
+
+func (c *ContainerCreate) Type() EventType {
+	return ContainerCreateEvent
+}
+
+func (c *ContainerCreate) String() string {
+	return fmt.Sprintf("ContainerCreate{ID: %s, Image: %s}", c.ContainerID, c.Image)
+}
+
+// ContainerRemove represents container cleanup
+type ContainerRemove struct {
+	ContainerID string
+}
+
+func (c *ContainerRemove) Type() EventType {
+	return ContainerRemoveEvent
+}
+
+func (c *ContainerRemove) String() string {
+	return fmt.Sprintf("ContainerRemove{ID: %s}", c.ContainerID)
+}
+
 func IsProcessStartEvent(event StreamEvent) bool {
 	return event.Type() == ProcessStartEvent
 }
@@ -296,6 +368,14 @@ func IsOutputEvent(event StreamEvent) bool {
 
 func IsTerminalResizeEvent(event StreamEvent) bool {
 	return event.Type() == TerminalResizeEventType
+}
+
+func IsContainerCreateEvent(event StreamEvent) bool {
+	return event.Type() == ContainerCreateEvent
+}
+
+func IsContainerRemoveEvent(event StreamEvent) bool {
+	return event.Type() == ContainerRemoveEvent
 }
 
 // Helper function to create Event with event and timestamp
@@ -337,6 +417,13 @@ type PipeProcessKilledError struct {
 
 func (e PipeProcessKilledError) Error() string {
 	return fmt.Sprintf("process %s was killed by signal %s", e.Cmd, e.Signal)
+}
+
+// ContainerMount represents a volume mount for container processes
+type ContainerMount struct {
+	Source   string
+	Target   string
+	ReadOnly bool
 }
 
 // LocalCancellor implements process cancellation for local processes
@@ -382,5 +469,92 @@ func (lc *LocalCancellor) Cancel(ctx context.Context, pid int) error {
 	case <-termCtx.Done():
 		// Timeout reached, force kill
 		return process.Signal(syscall.SIGKILL)
+	}
+}
+
+// Container-specific options
+
+// WithContainerImage sets the container image to use (REQUIRED for container processes)
+func WithContainerImage(image string) ContainerProcessOption {
+	return func(cfg *containerProcessConfig) {
+		cfg.image = image
+	}
+}
+
+// WithContainerRuntime sets the container runtime ("docker" or "podman")
+func WithContainerRuntime(runtime string) ContainerProcessOption {
+	return func(cfg *containerProcessConfig) {
+		cfg.runtime = runtime
+	}
+}
+
+// WithContainerMount adds a volume mount to the container
+func WithContainerMount(source, target string, readOnly bool) ContainerProcessOption {
+	return func(cfg *containerProcessConfig) {
+		cfg.mounts = append(cfg.mounts, ContainerMount{
+			Source:   source,
+			Target:   target,
+			ReadOnly: readOnly,
+		})
+	}
+}
+
+// Shared option adapters for container processes
+
+// WithContainerEnv sets environment variables as a slice of "KEY=value" strings
+func WithContainerEnv(env []string) ContainerProcessOption {
+	return func(cfg *containerProcessConfig) {
+		cfg.env = append(cfg.env, env...)
+	}
+}
+
+// WithContainerEnvMap sets environment variables from a map for convenience
+func WithContainerEnvMap(envMap map[string]string) ContainerProcessOption {
+	return func(cfg *containerProcessConfig) {
+		for key, value := range envMap {
+			cfg.env = append(cfg.env, key+"="+value)
+		}
+	}
+}
+
+// WithContainerWorkingDir sets the working directory for the container process
+func WithContainerWorkingDir(dir string) ContainerProcessOption {
+	return func(cfg *containerProcessConfig) {
+		cfg.workingDir = dir
+	}
+}
+
+// WithContainerCancellor sets a custom cancellor for the container process
+func WithContainerCancellor(cancellor Cancellor) ContainerProcessOption {
+	return func(cfg *containerProcessConfig) {
+		cfg.cancellor = cancellor
+	}
+}
+
+// WithContainerFlushInterval sets how often to flush output buffers for container processes
+func WithContainerFlushInterval(interval time.Duration) ContainerProcessOption {
+	return func(cfg *containerProcessConfig) {
+		cfg.flushInterval = interval
+	}
+}
+
+// WithContainerMaxBufferSize sets the maximum buffer size before forcing a flush for container processes
+func WithContainerMaxBufferSize(size int) ContainerProcessOption {
+	return func(cfg *containerProcessConfig) {
+		cfg.maxBufferSize = size
+	}
+}
+
+// WithContainerMeter sets an OpenTelemetry meter for metrics collection for container processes
+func WithContainerMeter(meter any) ContainerProcessOption {
+	return func(cfg *containerProcessConfig) {
+		cfg.meter = meter
+	}
+}
+
+// WithContainerMetricsInterval sets how often to aggregate metrics into buckets for container processes
+func WithContainerMetricsInterval(interval time.Duration) ContainerProcessOption {
+	return func(cfg *containerProcessConfig) {
+		cfg.metricsInterval = interval
 	}
 }
