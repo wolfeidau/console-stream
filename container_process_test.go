@@ -3,6 +3,7 @@ package consolestream
 import (
 	"context"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -11,8 +12,6 @@ import (
 )
 
 func TestNewContainerProcess(t *testing.T) {
-	t.Parallel()
-
 	tests := []struct {
 		name string
 		cmd  string
@@ -121,7 +120,7 @@ func TestContainerProcessWithMount(t *testing.T) {
 		t.Skip("Skipping container test in short mode")
 	}
 
-	t.Parallel()
+	// t.Parallel()
 
 	// Create temp file to mount
 	tmpFile, err := os.CreateTemp("", "test-container-mount-*.txt")
@@ -135,7 +134,7 @@ func TestContainerProcessWithMount(t *testing.T) {
 
 	// Mount the temp directory into the container
 	tmpDir := os.TempDir()
-	tmpFileName := tmpFile.Name()[len(tmpDir)+1:] // Get just the filename
+	tmpFileName := filepath.Base(tmpFile.Name()) // Get just the filename (safe method)
 
 	process := NewContainerProcess("cat", []string{"/workspace/" + tmpFileName},
 		WithContainerImage("alpine:latest"),

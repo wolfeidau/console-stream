@@ -5,13 +5,13 @@ import (
 	"fmt"
 	"io"
 	"iter"
-	"sync"
 	"time"
 
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/client"
 	"github.com/docker/docker/pkg/stdcopy"
 	"go.opentelemetry.io/otel/metric"
+	"golang.org/x/sync/errgroup"
 )
 
 // ContainerProcess represents a process running inside a container
@@ -36,7 +36,6 @@ type ContainerProcess struct {
 	pid         int
 	containerID string
 	stats       *ProcessStats
-	waiter      sync.WaitGroup
 }
 
 // NewContainerProcess creates a new container process with functional options
@@ -165,8 +164,7 @@ func (cp *ContainerProcess) ExecuteAndStream(ctx context.Context) iter.Seq2[Even
 		}
 
 		// 7. Stream logs in background
-		// Buffer size of 2 allows both the select case and final read to succeed
-		doneChan := make(chan error, 2)
+		doneChan := make(chan error, 1)
 		go cp.streamContainerLogs(ctx, dockerClient, containerID, yield, processStart, doneChan)
 
 		// 8. Wait for container completion
@@ -185,11 +183,10 @@ func (cp *ContainerProcess) ExecuteAndStream(ctx context.Context) iter.Seq2[Even
 				cp.stats.RecordError(ctx, "container_wait_error")
 			}
 			return
-		case <-doneChan:
-			// Log streaming finished
 		}
 
 		// Wait for log streaming to complete
+		// This always happens after container finishes (or context cancelled)
 		<-doneChan
 
 		// 9. Update metrics
@@ -304,27 +301,33 @@ func (cp *ContainerProcess) streamContainerLogs(
 	stdoutReader, stdoutWriter := io.Pipe()
 	stderrReader, stderrWriter := io.Pipe()
 
+	// Use errgroup to manage all copy goroutines
+	g := &errgroup.Group{}
+
 	// Start demuxing in background
-	cp.waiter.Add(1)
-	go func() {
-		defer cp.waiter.Done()
+	g.Go(func() error {
 		defer stdoutWriter.Close()
 		defer stderrWriter.Close()
-
 		// Use Docker's stdcopy package for demultiplexing
-		_, _ = stdcopy.StdCopy(stdoutWriter, stderrWriter, logsReader)
-	}()
+		_, err := stdcopy.StdCopy(stdoutWriter, stderrWriter, logsReader)
+		return err
+	})
 
 	// Read from both streams concurrently (not sequentially)
 	// Each stream copies to the buffer writer independently
-	cp.waiter.Add(2)
+	g.Go(func() error {
+		_, err := io.Copy(bufferWriter, stdoutReader)
+		return err
+	})
+	g.Go(func() error {
+		_, err := io.Copy(bufferWriter, stderrReader)
+		return err
+	})
+
+	// Monitor when all io.Copy goroutines finish
+	copyDone := make(chan error, 1)
 	go func() {
-		defer cp.waiter.Done()
-		_, _ = io.Copy(bufferWriter, stdoutReader)
-	}()
-	go func() {
-		defer cp.waiter.Done()
-		_, _ = io.Copy(bufferWriter, stderrReader)
+		copyDone <- g.Wait()
 	}()
 
 	// Heartbeat tracking
@@ -334,7 +337,17 @@ func (cp *ContainerProcess) streamContainerLogs(
 	for {
 		select {
 		case <-ctx.Done():
-			// Final flush before returning
+			// Context cancelled - final flush before returning
+			if data := bufferWriter.FlushAndClear(); data != nil {
+				yield(newEvent(&OutputData{
+					Data: data,
+				}), nil)
+			}
+			return
+
+		case <-copyDone:
+			// All log streams finished (container stopped and logs fully read)
+			// Do final flush and exit
 			if data := bufferWriter.FlushAndClear(); data != nil {
 				yield(newEvent(&OutputData{
 					Data: data,
