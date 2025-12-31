@@ -190,6 +190,23 @@ type ContainerRemove struct {
     ContainerID string
 }
 
+type ImagePullStart struct {
+    Image string
+}
+
+type ImagePullProgress struct {
+    Image           string
+    Status          string
+    PercentComplete int
+    BytesDownloaded int64
+    BytesTotal      int64
+}
+
+type ImagePullComplete struct {
+    Image  string
+    Digest string
+}
+
 type StreamType int
 
 const (

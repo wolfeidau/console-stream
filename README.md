@@ -78,7 +78,9 @@ process := consolestream.NewProcess("npm", []string{"install"},
 
 ### Container Execution
 
-Execute processes inside Docker/Podman containers with volume mounts and environment variables:
+Execute processes inside Docker/Podman containers with volume mounts and environment variables.
+
+**Automatic Image Pulling**: Container images are automatically pulled if not available locally, with progress events emitted every 2 seconds.
 
 ```go
 // Simple container execution
@@ -102,6 +104,13 @@ for event, err := range process.ExecuteAndStream(ctx) {
     }
 
     switch e := event.Event.(type) {
+    case *consolestream.ImagePullStart:
+        fmt.Printf("Pulling image: %s\n", e.Image)
+    case *consolestream.ImagePullProgress:
+        fmt.Printf("Pull progress: %d%% (%d/%d bytes)\n",
+            e.PercentComplete, e.BytesDownloaded, e.BytesTotal)
+    case *consolestream.ImagePullComplete:
+        fmt.Printf("Pull complete: %s\n", e.Digest)
     case *consolestream.ContainerCreate:
         fmt.Printf("Container: %s\n", e.ContainerID)
     case *consolestream.OutputData:
@@ -136,6 +145,9 @@ for event, err := range process.ExecuteAndStream(ctx) {
 | `TerminalResizeEvent` | Terminal size change (PTY only) |
 | `ContainerCreate` | Container created with ID and image |
 | `ContainerRemove` | Container cleanup completed |
+| `ImagePullStart` | Container image pull started |
+| `ImagePullProgress` | Container image pull progress (every 2s) |
+| `ImagePullComplete` | Container image pull completed |
 
 ## Use Cases
 
