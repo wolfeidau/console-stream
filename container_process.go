@@ -165,7 +165,8 @@ func (cp *ContainerProcess) ExecuteAndStream(ctx context.Context) iter.Seq2[Even
 		}
 
 		// 7. Stream logs in background
-		doneChan := make(chan error, 1)
+		// Buffer size of 2 allows both the select case and final read to succeed
+		doneChan := make(chan error, 2)
 		go cp.streamContainerLogs(ctx, dockerClient, containerID, yield, processStart, doneChan)
 
 		// 8. Wait for container completion
@@ -314,14 +315,16 @@ func (cp *ContainerProcess) streamContainerLogs(
 		_, _ = stdcopy.StdCopy(stdoutWriter, stderrWriter, logsReader)
 	}()
 
-	// Read from combined output
-	combinedReader := io.MultiReader(stdoutReader, stderrReader)
-
-	cp.waiter.Add(1)
+	// Read from both streams concurrently (not sequentially)
+	// Each stream copies to the buffer writer independently
+	cp.waiter.Add(2)
 	go func() {
 		defer cp.waiter.Done()
-
-		_, _ = io.Copy(bufferWriter, combinedReader)
+		_, _ = io.Copy(bufferWriter, stdoutReader)
+	}()
+	go func() {
+		defer cp.waiter.Done()
+		_, _ = io.Copy(bufferWriter, stderrReader)
 	}()
 
 	// Heartbeat tracking
@@ -384,18 +387,6 @@ func (cp *ContainerProcess) streamContainerLogs(
 					}
 				}
 			}
-		}
-
-		// Check if container is still running
-		inspect, err := dockerClient.ContainerInspect(ctx, containerID)
-		if err == nil && inspect.State != nil && !inspect.State.Running {
-			// Final flush
-			if data := bufferWriter.FlushAndClear(); data != nil {
-				yield(newEvent(&OutputData{
-					Data: data,
-				}), nil)
-			}
-			return
 		}
 	}
 }

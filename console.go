@@ -56,7 +56,7 @@ func (cfg *processConfig) applyDefaults() {
 		cfg.flushInterval = time.Second // Default 1-second flush interval
 	}
 	if cfg.maxBufferSize == 0 {
-		cfg.maxBufferSize = 1024 // Default 1k buffer limit
+		cfg.maxBufferSize = 10 * 1024 * 1024 // Default 10MB buffer limit (matches PipeProcess)
 	}
 	if cfg.metricsInterval == 0 {
 		cfg.metricsInterval = time.Second // Default 1-second metrics aggregation
@@ -95,7 +95,7 @@ func (cfg *containerProcessConfig) applyDefaults() {
 		cfg.flushInterval = time.Second // Default 1-second flush interval
 	}
 	if cfg.maxBufferSize == 0 {
-		cfg.maxBufferSize = 1024 // Default 1k buffer limit
+		cfg.maxBufferSize = 10 * 1024 * 1024 // Default 10MB buffer limit (matches PipeProcess)
 	}
 	if cfg.metricsInterval == 0 {
 		cfg.metricsInterval = time.Second // Default 1-second metrics aggregation
