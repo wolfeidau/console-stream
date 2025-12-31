@@ -386,6 +386,68 @@ func TestContainerProcessConcurrent(t *testing.T) {
 	}
 }
 
+func TestContainerProcessInvalidMount(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping container test in short mode")
+	}
+
+	t.Parallel()
+
+	t.Run("nonexistent source path", func(t *testing.T) {
+		t.Parallel()
+
+		process := NewContainerProcess("echo", []string{"test"},
+			WithContainerImage("alpine:latest"),
+			WithContainerMount("/nonexistent/path", "/workspace", false))
+
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		var gotError bool
+		for event, err := range process.ExecuteAndStream(ctx) {
+			if err != nil {
+				require.Contains(t, err.Error(), "mount source")
+				require.Contains(t, err.Error(), "does not exist")
+				gotError = true
+				break
+			}
+			if event.EventType() == ProcessErrorEvent {
+				gotError = true
+				break
+			}
+		}
+
+		require.True(t, gotError, "Should error on nonexistent mount source")
+	})
+
+	t.Run("relative target path", func(t *testing.T) {
+		t.Parallel()
+
+		tmpDir := os.TempDir()
+		process := NewContainerProcess("echo", []string{"test"},
+			WithContainerImage("alpine:latest"),
+			WithContainerMount(tmpDir, "relative/path", false))
+
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		var gotError bool
+		for event, err := range process.ExecuteAndStream(ctx) {
+			if err != nil {
+				require.Contains(t, err.Error(), "mount target must be absolute")
+				gotError = true
+				break
+			}
+			if event.EventType() == ProcessErrorEvent {
+				gotError = true
+				break
+			}
+		}
+
+		require.True(t, gotError, "Should error on relative mount target")
+	})
+}
+
 func TestContainerProcessImagePull(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping container test in short mode")

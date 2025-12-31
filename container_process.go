@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"iter"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -162,15 +164,14 @@ func (cp *ContainerProcess) ExecuteAndStream(ctx context.Context) iter.Seq2[Even
 			return
 		}
 
-		// 5. Inspect container to get PID (for metrics)
-		inspect, err := dockerClient.ContainerInspect(ctx, containerID)
-		if err == nil && inspect.State != nil {
-			cp.pid = inspect.State.Pid
-		}
-
-		// Initialize stats if metrics enabled
+		// 5. Initialize stats if metrics enabled
+		// Only inspect container for PID if we need it for metrics
 		if cp.stats != nil {
-			cp.stats.processInfo.PID = cp.pid
+			inspect, err := dockerClient.ContainerInspect(ctx, containerID)
+			if err == nil && inspect.State != nil {
+				cp.pid = inspect.State.Pid
+				cp.stats.processInfo.PID = cp.pid
+			}
 			cp.stats.Start(ctx)
 		}
 
@@ -268,8 +269,18 @@ func (cp *ContainerProcess) createContainer(ctx context.Context, dockerClient *c
 		AutoRemove: false, // We handle cleanup explicitly
 	}
 
-	// Add mounts
+	// Add mounts with validation
 	for _, mount := range cp.mounts {
+		// Validate source path exists
+		if _, err := os.Stat(mount.Source); err != nil {
+			return "", fmt.Errorf("mount source %s does not exist: %w", mount.Source, err)
+		}
+
+		// Validate target path is absolute
+		if !filepath.IsAbs(mount.Target) {
+			return "", fmt.Errorf("mount target must be absolute path, got: %s", mount.Target)
+		}
+
 		bind := fmt.Sprintf("%s:%s", mount.Source, mount.Target)
 		if mount.ReadOnly {
 			bind += ":ro"
