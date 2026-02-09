@@ -7,8 +7,8 @@ require (
 	github.com/creack/pty v1.1.24
 	github.com/docker/docker v28.5.2+incompatible
 	github.com/stretchr/testify v1.11.1
-	go.opentelemetry.io/otel v1.39.0
-	go.opentelemetry.io/otel/metric v1.39.0
+	go.opentelemetry.io/otel v1.40.0
+	go.opentelemetry.io/otel/metric v1.40.0
 	go.opentelemetry.io/otel/sdk/metric v1.39.0
 	golang.org/x/sync v0.19.0
 	gopkg.in/yaml.v3 v3.0.1
@@ -42,7 +42,7 @@ require (
 	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.64.0 // indirect
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp v1.39.0 // indirect
 	go.opentelemetry.io/otel/sdk v1.39.0 // indirect
-	go.opentelemetry.io/otel/trace v1.39.0 // indirect
+	go.opentelemetry.io/otel/trace v1.40.0 // indirect
 	golang.org/x/sys v0.39.0 // indirect
 	golang.org/x/time v0.14.0 // indirect
 	golang.org/x/tools v0.26.0 // indirect
