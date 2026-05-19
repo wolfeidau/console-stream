@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -358,7 +359,7 @@ func TestContainerProcessConcurrent(t *testing.T) {
 	for i := 0; i < numContainers; i++ {
 		i := i
 		go func() {
-			process := NewContainerProcess("echo", []string{"container", string(rune('0' + i))},
+			process := NewContainerProcess("echo", []string{"container", strconv.Itoa(i)},
 				WithContainerImage("alpine:latest"))
 
 			for event, err := range process.ExecuteAndStream(ctx) {
