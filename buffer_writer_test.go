@@ -96,7 +96,11 @@ func TestBufferWriter_ConcurrentAccess(t *testing.T) {
 		go func(id int) {
 			defer func() { done <- true }()
 			for j := 0; j < 100; j++ {
-				_, err := writer.Write([]byte{byte(id)})
+				var b byte
+				if id >= 0 && id <= 255 {
+					b = byte(id)
+				}
+				_, err := writer.Write([]byte{b})
 				require.NoError(t, err)
 			}
 		}(i)

@@ -136,7 +136,8 @@ func TestProcessWithPTYSize(t *testing.T) {
 	size := pty.Winsize{Rows: 24, Cols: 80}
 	process := NewProcess("bash", []string{"-c", "tput cols && tput lines"},
 		WithPTYMode(),
-		WithPTYSize(size))
+		WithPTYSize(size),
+		WithEnvVar("TERM", "xterm"))
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
