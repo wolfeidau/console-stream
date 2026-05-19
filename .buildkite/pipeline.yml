@@ -1,52 +1,26 @@
-image: "${BUILDKITE_HOSTED_REGISTRY_URL}/console-stream_base:latest"
+image: "buildkite/hosted-agent-base-images:ubuntu-jammy"
 
 steps:
-  - if: build.branch == "main"
-    if_changed: ".buildkite/Dockerfile.build"
-    key: base_image
-    image: "buildkite/hosted-agent-base-images:ubuntu-jammy"
-    label: ":docker: Create base image"
-    command: |
-      docker buildx build \
-        --no-cache \
-        --file .buildkite/Dockerfile.build \
-        --platform linux/amd64,linux/arm64 \
-        --tag "${BUILDKITE_HOSTED_REGISTRY_URL}/console-stream_base:latest" \
-        --progress plain \
-        --push .
-
-  - if: build.branch != "main"
-    if_changed: ".buildkite/Dockerfile.build"
-    key: base_image_check
-    image: "buildkite/hosted-agent-base-images:ubuntu-jammy"
-    label: ":docker: Check base image update"
-    command: |
-      docker buildx build \
-        --no-cache \
-        --file .buildkite/Dockerfile.build \
-        --platform linux/amd64,linux/arm64 \
-        --tag "${BUILDKITE_HOSTED_REGISTRY_URL}/console-stream_base:dev" \
-        --progress plain .
-
   - group: ":mag: QA"
     key: quality_checks
-    depends_on: [base_image]
     steps:
-      - key: lint
-        label: ":golangci-lint: lint"
-        command: make lint
+      - label: ":golangci-lint: lint"
+        command: golangci-lint run --verbose --timeout 3m
+        plugins:
+          - mise#v1.1.1: ~
 
-      - key: test
-        label: ":go: test"
+      - label: ":go: test"
         artifact_paths:
           - cover-tree.svg
           - coverage.out
-          - coverage.html
         commands:
-          - make test-coverage
+          - go test -coverprofile coverage.out -coverpkg=./... ./...
           - go run github.com/nikolaydubina/go-cover-treemap -coverprofile coverage.out > cover-tree.svg
           - echo '<details><summary>Coverage tree map</summary><img src="artifact://cover-tree.svg" alt="Test coverage tree map" width="70%"></details>' | buildkite-agent annotate --style "info"
+        plugins:
+          - mise#v1.1.1: ~
 
-      - key: build
-        label: ":hammer: build"
+      - label: ":hammer: build"
         command: make build
+        plugins:
+          - mise#v1.1.1: ~
