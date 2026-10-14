@@ -201,6 +201,7 @@ func (p *Process) run(ctx context.Context, yield func(Event, error) bool) {
 
 	flush := make(chan struct{}, 1)
 	done := make(chan error, 1)
+	reaped := make(chan struct{}) // closed once cmd.Wait has returned
 	exited := make(chan struct{}) // closed once the child is reaped and output drained
 	w := NewBufferWriter(flush, p.maxBufferSize)
 
@@ -214,6 +215,7 @@ func (p *Process) run(ctx context.Context, yield func(Event, error) bool) {
 	// Reap the child promptly, then wait for the reader so output is complete.
 	go func() {
 		err := cmd.Wait()
+		close(reaped)
 		<-readerDone
 		done <- err
 		close(exited)
@@ -222,15 +224,15 @@ func (p *Process) run(ctx context.Context, yield func(Event, error) bool) {
 	// stop terminates the child via the Cancellor and drains goroutines.
 	stop := func() {
 		select {
-		case <-exited:
-			return // already reaped; avoid signalling a reusable pid
+		case <-reaped:
+			// Already reaped; avoid signalling a reusable pid.
 		default:
-		}
-		cancelCtx := context.WithoutCancel(ctx)
-		if p.cancellor != nil {
-			_ = p.cancellor.Cancel(cancelCtx, pid) // Best effort cancellation
-		} else {
-			_ = cmd.Process.Kill()
+			cancelCtx := context.WithoutCancel(ctx)
+			if p.cancellor != nil {
+				_ = p.cancellor.Cancel(cancelCtx, pid) // Best effort cancellation
+			} else {
+				_ = cmd.Process.Kill()
+			}
 		}
 		_ = out.Close() // unblocks the reader if a descendant holds the tty/pipe
 		<-exited

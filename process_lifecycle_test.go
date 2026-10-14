@@ -3,6 +3,7 @@ package consolestream
 import (
 	"context"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
@@ -47,8 +48,9 @@ func TestProcessEarlyBreakStopsChild(t *testing.T) {
 func TestProcessContextCancelGracefulTerm(t *testing.T) {
 	t.Parallel()
 
-	script := `trap "echo got-term; exit 0" TERM; while true; do sleep 0.1; done`
-	process := NewProcess("sh", []string{"-c", script}, WithPipeMode())
+	marker := filepath.Join(t.TempDir(), "term-marker")
+	script := `trap 'echo got-term > "$1"; exit 0' TERM; while true; do sleep 0.1; done`
+	process := NewProcess("sh", []string{"-c", script, "sh", marker}, WithPipeMode())
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -65,6 +67,26 @@ func TestProcessContextCancelGracefulTerm(t *testing.T) {
 
 	require.Less(t, time.Since(start), 3*time.Second)
 	requireGone(t, pid, time.Second)
+	// Marker proves the SIGTERM handler ran rather than an immediate SIGKILL.
+	require.FileExists(t, marker)
+}
+
+func TestProcessBreakWithGrandchildHoldingPipe(t *testing.T) {
+	t.Parallel()
+
+	// The shell exits at once but the background sleep keeps the pipe open.
+	process := NewProcess("sh", []string{"-c", "sleep 5 & echo started"},
+		WithPipeMode(), WithFlushInterval(100*time.Millisecond))
+
+	start := time.Now()
+	for ev, err := range process.ExecuteAndStream(context.Background()) {
+		require.NoError(t, err)
+		if _, ok := ev.Event.(*OutputData); ok {
+			break
+		}
+	}
+
+	require.Less(t, time.Since(start), 2*time.Second)
 }
 
 func TestProcessPartialLineStreaming(t *testing.T) {
