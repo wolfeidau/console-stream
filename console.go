@@ -2,8 +2,8 @@ package consolestream
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"os"
 	"syscall"
 	"time"
 
@@ -462,34 +462,40 @@ func (lc *LocalCancellor) Cancel(ctx context.Context, pid int) error {
 		return fmt.Errorf("invalid pid: %d", pid)
 	}
 
-	process, err := os.FindProcess(pid)
-	if err != nil {
-		return fmt.Errorf("failed to find process %d: %w", pid, err)
-	}
-
 	// Send SIGTERM first
-	if err := process.Signal(syscall.SIGTERM); err != nil {
-		// PipeProcess might already be dead, try SIGKILL anyway
-		return process.Signal(syscall.SIGKILL)
+	if err := syscall.Kill(pid, syscall.SIGTERM); err != nil {
+		if errors.Is(err, syscall.ESRCH) {
+			return nil // already gone
+		}
+		return syscall.Kill(pid, syscall.SIGKILL)
 	}
 
-	// Wait for graceful termination or timeout
-	termCtx, cancel := context.WithTimeout(ctx, lc.terminateTimeout)
-	defer cancel()
+	// Poll for exit (the owner reaps the child) until timeout, then force kill.
+	// Not calling Wait here avoids racing the owner's cmd.Wait.
+	deadline := time.NewTimer(lc.terminateTimeout)
+	defer deadline.Stop()
+	tick := time.NewTicker(50 * time.Millisecond)
+	defer tick.Stop()
 
-	done := make(chan error, 1)
-	go func() {
-		_, err := process.Wait()
-		done <- err
-	}()
+	for {
+		if err := syscall.Kill(pid, 0); errors.Is(err, syscall.ESRCH) {
+			return nil
+		}
+		select {
+		case <-tick.C:
+		case <-ctx.Done():
+			return killIgnoreGone(pid)
+		case <-deadline.C:
+			return killIgnoreGone(pid)
+		}
+	}
+}
 
-	select {
-	case err := <-done:
+func killIgnoreGone(pid int) error {
+	if err := syscall.Kill(pid, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
 		return err
-	case <-termCtx.Done():
-		// Timeout reached, force kill
-		return process.Signal(syscall.SIGKILL)
 	}
+	return nil
 }
 
 // Container-specific options

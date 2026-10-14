@@ -1,7 +1,6 @@
 package consolestream
 
 import (
-	"bufio"
 	"context"
 	"fmt"
 	"io"
@@ -81,7 +80,6 @@ func WithPTYSize(size *pty.Winsize) ProcessOption {
 type Process struct {
 	cmd           string
 	args          []string
-	pid           int
 	mode          ProcessMode
 	cancellor     Cancellor
 	env           []string
@@ -90,18 +88,8 @@ type Process struct {
 	flushInterval time.Duration
 	maxBufferSize int
 
-	// Buffer management
-	outputWriter *BufferWriter
-
-	// Pipe mode: separate buffers for stdout/stderr (combined into single stream)
-	bufferMu     sync.Mutex
-	stdoutBuffer []byte
-	stderrBuffer []byte
-
 	// Metrics and observability (optional)
 	stats *ProcessStats
-
-	waiter sync.WaitGroup
 }
 
 // NewProcess creates a new unified process with functional options
@@ -143,556 +131,131 @@ func NewProcess(cmd string, args []string, opts ...ProcessOption) *Process {
 	return process
 }
 
-// ExecuteAndStream starts a process and returns an iterator over Event objects
+// ExecuteAndStream starts a process and returns an iterator over Event objects.
+// Breaking out of the loop or cancelling ctx stops the child via the Cancellor
+// and waits for all goroutines to finish before the iterator returns.
 func (p *Process) ExecuteAndStream(ctx context.Context) iter.Seq2[Event, error] {
+	return func(yield func(Event, error) bool) {
+		p.run(ctx, yield)
+	}
+}
+
+// startProcess starts the command in the configured mode. It returns the
+// reader (PTY master or pipe read end) that carries the output; the caller
+// owns closing it. label names the mode in error messages.
+func (p *Process) startProcess(cmd *exec.Cmd) (r *os.File, label string, err error) {
 	if p.mode == PTYMode {
-		return p.executePTYMode(ctx)
-	}
-	return p.executePipeMode(ctx)
-}
-
-// executePTYMode handles PTY process execution
-func (p *Process) executePTYMode(ctx context.Context) iter.Seq2[Event, error] {
-	return func(yield func(Event, error) bool) {
-		// Create the command
-		// #nosec G204 - Command and args are controlled by the caller
-		cmd := exec.CommandContext(ctx, p.cmd, p.args...)
-		if len(p.env) > 0 {
-			cmd.Env = p.env
-		}
-		if p.workingDir != "" {
-			cmd.Dir = p.workingDir
-		}
-
-		// Start the command with PTY
-		var ptmx *os.File
-		var err error
 		if p.ptySize != nil {
-			ptmx, err = pty.StartWithSize(cmd, p.ptySize)
+			r, err = pty.StartWithSize(cmd, p.ptySize)
 		} else {
-			ptmx, err = pty.Start(cmd)
+			r, err = pty.Start(cmd)
 		}
-		if err != nil {
-			yield(newEvent(&ProcessError{
-				Error:   err,
-				Message: "Failed to start PTY process",
-			}), ProcessStartError{Cmd: p.cmd, Err: err})
-			return
-		}
-		defer ptmx.Close()
-
-		// Store the PID and track start time
-		p.pid = cmd.Process.Pid
-		processStart := time.Now()
-
-		// Initialize stats if metrics are enabled
-		if p.stats != nil {
-			// Update process info with PID now that it's available
-			p.stats.processInfo.PID = p.pid
-			p.stats.Start(ctx)
-		}
-
-		// Emit ProcessStart event
-		processStartEvent := Event{
-			Timestamp: processStart,
-			Event: &ProcessStart{
-				PID:     p.pid,
-				Command: p.cmd,
-				Args:    p.args,
-			},
-		}
-		if !yield(processStartEvent, nil) {
-			return
-		}
-
-		// Record event in metrics
-		if p.stats != nil {
-			p.stats.RecordEvent(ctx, "process_start")
-		}
-
-		// Channels for coordination
-		flushChan := make(chan struct{}, 1)
-		doneChan := make(chan error, 1)
-
-		// Initialize buffer writer
-		p.outputWriter = NewBufferWriter(flushChan, p.maxBufferSize)
-
-		// Start ticker for configurable intervals
-		ticker := time.NewTicker(p.flushInterval)
-		defer ticker.Stop()
-
-		// Heartbeat tracking
-		var hasEmittedEventsThisSecond bool
-
-		p.waiter.Add(1)
-
-		// Read from PTY
-		go p.readPTYStream(ctx, ptmx, flushChan)
-
-		// Wait for process completion
-		go func() {
-			p.waiter.Wait()
-			doneChan <- cmd.Wait()
-		}()
-
-		// Main streaming loop
-		for {
-			select {
-			case <-ctx.Done():
-				// Context cancelled, use cancellor
-				if p.cancellor != nil {
-					_ = p.cancellor.Cancel(ctx, p.pid) // Best effort cancellation
-				}
-				return
-
-			case <-ticker.C:
-				// configured interval - flush buffers if they have data
-				eventsEmitted := false
-
-				if data := p.outputWriter.FlushAndClear(); data != nil {
-					if !yield(newEvent(&OutputData{
-						Data: data,
-					}), nil) {
-						return
-					}
-					eventsEmitted = true
-					// Record metrics for output data
-					if p.stats != nil {
-						p.stats.RecordOutput(ctx, int64(len(data)))
-					}
-				}
-
-				// Emit heartbeat if no events were emitted this second
-				if !hasEmittedEventsThisSecond && !eventsEmitted {
-					if !yield(newEvent(&HeartbeatEvent{
-						ProcessAlive: true,
-						ElapsedTime:  time.Since(processStart),
-					}), nil) {
-						return
-					}
-				}
-
-				// Reset heartbeat tracking
-				hasEmittedEventsThisSecond = eventsEmitted
-
-			case <-flushChan:
-				// Immediate flush due to buffer size limit
-				if p.outputWriter.Len() >= p.maxBufferSize {
-					if data := p.outputWriter.FlushAndClear(); data != nil {
-						if !yield(newEvent(&OutputData{
-							Data: data,
-						}), nil) {
-							return
-						}
-						hasEmittedEventsThisSecond = true
-						// Record metrics for output data
-						if p.stats != nil {
-							p.stats.RecordOutput(ctx, int64(len(data)))
-						}
-					}
-				}
-
-			case err := <-doneChan:
-				// Process finished - flush remaining buffers and handle exit
-				endTime := time.Now()
-				duration := endTime.Sub(processStart)
-
-				if data := p.outputWriter.FlushAndClear(); data != nil {
-					endPart := Event{
-						Timestamp: endTime,
-						Event: &OutputData{
-							Data: data,
-						},
-					}
-					if !yield(endPart, nil) {
-						return
-					}
-					// Record metrics for final output data
-					if p.stats != nil {
-						p.stats.RecordOutput(ctx, int64(len(data)))
-					}
-				}
-
-				// Update final stats
-				if p.stats != nil {
-					p.stats.Stop(ctx)
-					if err != nil {
-						if exitError, ok := err.(*exec.ExitError); ok {
-							p.stats.SetExitCode(exitError.ExitCode())
-						}
-					} else {
-						p.stats.SetExitCode(0)
-					}
-				}
-
-				// Emit ProcessEnd or ProcessError event
-				if err != nil {
-					if exitError, ok := err.(*exec.ExitError); ok {
-						yield(Event{
-							Timestamp: endTime,
-							Event: &ProcessEnd{
-								ExitCode: exitError.ExitCode(),
-								Duration: duration,
-								Success:  false,
-							},
-						}, nil)
-						if p.stats != nil {
-							p.stats.RecordEvent(ctx, "process_end")
-						}
-					} else {
-						yield(Event{
-							Timestamp: endTime,
-							Event: &ProcessError{
-								Error:   err,
-								Message: "PTY process terminated unexpectedly",
-							},
-						}, nil)
-						if p.stats != nil {
-							p.stats.RecordError(ctx, "process_error")
-						}
-					}
-				} else {
-					// Process completed successfully
-					yield(Event{
-						Timestamp: endTime,
-						Event: &ProcessEnd{
-							ExitCode: 0,
-							Duration: duration,
-							Success:  true,
-						},
-					}, nil)
-					if p.stats != nil {
-						p.stats.RecordEvent(ctx, "process_end")
-					}
-				}
-				return
-			}
-		}
+		return r, "PTY", err
 	}
-}
 
-// executePipeMode handles pipe process execution
-func (p *Process) executePipeMode(ctx context.Context) iter.Seq2[Event, error] {
-	return func(yield func(Event, error) bool) {
-		// Create the command
-		// #nosec G204 - Command and args are controlled by the caller
-		cmd := exec.CommandContext(ctx, p.cmd, p.args...)
-		if len(p.env) > 0 {
-			cmd.Env = p.env
-		}
-		if p.workingDir != "" {
-			cmd.Dir = p.workingDir
-		}
-
-		// Get stdout and stderr pipes
-		stdoutPipe, err := cmd.StdoutPipe()
-		if err != nil {
-			yield(newEvent(&ProcessError{
-				Error:   err,
-				Message: "Failed to create stdout pipe",
-			}), ProcessStartError{Cmd: p.cmd, Err: err})
-			return
-		}
-
-		stderrPipe, err := cmd.StderrPipe()
-		if err != nil {
-			yield(newEvent(&ProcessError{
-				Error:   err,
-				Message: "Failed to create stderr pipe",
-			}), ProcessStartError{Cmd: p.cmd, Err: err})
-			return
-		}
-
-		// Start the command
-		if err := cmd.Start(); err != nil {
-			yield(newEvent(&ProcessError{
-				Error:   err,
-				Message: "Failed to start process",
-			}), ProcessStartError{Cmd: p.cmd, Err: err})
-			return
-		}
-
-		// Store the PID and track start time
-		p.pid = cmd.Process.Pid
-		processStart := time.Now()
-
-		// Initialize stats if metrics are enabled
-		if p.stats != nil {
-			p.stats.processInfo.PID = p.pid
-			p.stats.Start(ctx)
-		}
-
-		// Emit ProcessStart event
-		processStartEvent := Event{
-			Timestamp: processStart,
-			Event: &ProcessStart{
-				PID:     p.pid,
-				Command: p.cmd,
-				Args:    p.args,
-			},
-		}
-		if !yield(processStartEvent, nil) {
-			return
-		}
-
-		// Record event in metrics
-		if p.stats != nil {
-			p.stats.RecordEvent(ctx, "process_start")
-		}
-
-		// Channels for coordination
-		flushChan := make(chan struct{}, 1)
-		doneChan := make(chan error, 1)
-
-		// Start ticker for configurable intervals
-		ticker := time.NewTicker(p.flushInterval)
-		defer ticker.Stop()
-
-		// Heartbeat tracking
-		var hasEmittedEventsThisSecond bool
-
-		p.waiter.Add(2)
-
-		// Read from stdout and stderr (they will be combined in order)
-		go p.readPipeStream(ctx, stdoutPipe, flushChan)
-		go p.readPipeStream(ctx, stderrPipe, flushChan)
-
-		// Wait for process completion
-		go func() {
-			p.waiter.Wait()
-			doneChan <- cmd.Wait()
-		}()
-
-		// Main streaming loop
-		for {
-			select {
-			case <-ctx.Done():
-				// Context cancelled, use cancellor
-				if p.cancellor != nil {
-					_ = p.cancellor.Cancel(ctx, p.pid) // Best effort cancellation
-				}
-				return
-
-			case <-ticker.C:
-				// 1-second interval - flush buffers if they have data
-				p.bufferMu.Lock()
-				eventsEmitted := false
-
-				// Combine stdout and stderr into single output event
-				var combinedData []byte
-				if len(p.stdoutBuffer) > 0 {
-					combinedData = append(combinedData, p.stdoutBuffer...)
-					p.stdoutBuffer = p.stdoutBuffer[:0]
-				}
-				if len(p.stderrBuffer) > 0 {
-					combinedData = append(combinedData, p.stderrBuffer...)
-					p.stderrBuffer = p.stderrBuffer[:0]
-				}
-
-				if len(combinedData) > 0 {
-					if !yield(newEvent(&OutputData{
-						Data: combinedData,
-					}), nil) {
-						p.bufferMu.Unlock()
-						return
-					}
-					eventsEmitted = true
-					// Record metrics for output data
-					if p.stats != nil {
-						p.stats.RecordOutput(ctx, int64(len(combinedData)))
-					}
-				}
-
-				// Emit heartbeat if no events were emitted this second
-				if !hasEmittedEventsThisSecond && !eventsEmitted {
-					if !yield(newEvent(&HeartbeatEvent{
-						ProcessAlive: true,
-						ElapsedTime:  time.Since(processStart),
-					}), nil) {
-						p.bufferMu.Unlock()
-						return
-					}
-				}
-
-				// Reset heartbeat tracking
-				hasEmittedEventsThisSecond = eventsEmitted
-				p.bufferMu.Unlock()
-
-			case <-flushChan:
-				// Immediate flush due to buffer size limit
-				p.bufferMu.Lock()
-				var combinedData []byte
-				if len(p.stdoutBuffer) >= p.maxBufferSize || len(p.stderrBuffer) >= p.maxBufferSize {
-					if len(p.stdoutBuffer) > 0 {
-						combinedData = append(combinedData, p.stdoutBuffer...)
-						p.stdoutBuffer = p.stdoutBuffer[:0]
-					}
-					if len(p.stderrBuffer) > 0 {
-						combinedData = append(combinedData, p.stderrBuffer...)
-						p.stderrBuffer = p.stderrBuffer[:0]
-					}
-
-					if len(combinedData) > 0 {
-						if !yield(newEvent(&OutputData{
-							Data: combinedData,
-						}), nil) {
-							p.bufferMu.Unlock()
-							return
-						}
-						hasEmittedEventsThisSecond = true
-						// Record metrics for output data
-						if p.stats != nil {
-							p.stats.RecordOutput(ctx, int64(len(combinedData)))
-						}
-					}
-				}
-				p.bufferMu.Unlock()
-
-			case err := <-doneChan:
-				// Process finished - flush remaining buffers and handle exit
-				endTime := time.Now()
-				duration := endTime.Sub(processStart)
-
-				p.bufferMu.Lock()
-				var combinedData []byte
-				if len(p.stdoutBuffer) > 0 {
-					combinedData = append(combinedData, p.stdoutBuffer...)
-				}
-				if len(p.stderrBuffer) > 0 {
-					combinedData = append(combinedData, p.stderrBuffer...)
-				}
-
-				if len(combinedData) > 0 {
-					endPart := Event{
-						Timestamp: endTime,
-						Event: &OutputData{
-							Data: combinedData,
-						},
-					}
-					if !yield(endPart, nil) {
-						p.bufferMu.Unlock()
-						return
-					}
-					// Record metrics for final output data
-					if p.stats != nil {
-						p.stats.RecordOutput(ctx, int64(len(combinedData)))
-					}
-				}
-				p.bufferMu.Unlock()
-
-				// Update final stats
-				if p.stats != nil {
-					p.stats.Stop(ctx)
-					if err != nil {
-						if exitError, ok := err.(*exec.ExitError); ok {
-							p.stats.SetExitCode(exitError.ExitCode())
-						}
-					} else {
-						p.stats.SetExitCode(0)
-					}
-				}
-
-				// Emit ProcessEnd or ProcessError event
-				if err != nil {
-					if exitError, ok := err.(*exec.ExitError); ok {
-						yield(Event{
-							Timestamp: endTime,
-							Event: &ProcessEnd{
-								ExitCode: exitError.ExitCode(),
-								Duration: duration,
-								Success:  false,
-							},
-						}, nil)
-						if p.stats != nil {
-							p.stats.RecordEvent(ctx, "process_end")
-						}
-					} else {
-						yield(Event{
-							Timestamp: endTime,
-							Event: &ProcessError{
-								Error:   err,
-								Message: "Pipe process terminated unexpectedly",
-							},
-						}, nil)
-						if p.stats != nil {
-							p.stats.RecordError(ctx, "process_error")
-						}
-					}
-				} else {
-					// Process completed successfully
-					yield(Event{
-						Timestamp: endTime,
-						Event: &ProcessEnd{
-							ExitCode: 0,
-							Duration: duration,
-							Success:  true,
-						},
-					}, nil)
-					if p.stats != nil {
-						p.stats.RecordEvent(ctx, "process_end")
-					}
-				}
-				return
-			}
-		}
+	// A single pipe carries stdout and stderr so their relative order is kept.
+	r, pw, err := os.Pipe()
+	if err != nil {
+		return nil, "Pipe", err
 	}
+	cmd.Stdout = pw
+	cmd.Stderr = pw
+	err = cmd.Start()
+	_ = pw.Close() // child holds its own copy
+	if err != nil {
+		_ = r.Close()
+		return nil, "Pipe", err
+	}
+	return r, "Pipe", nil
 }
 
-// readPTYStream reads from a PTY and accumulates data using the BufferWriter
-func (p *Process) readPTYStream(_ context.Context, ptmx *os.File, _ chan<- struct{}) {
-	defer p.waiter.Done()
-	defer p.outputWriter.Close()
-	_, _ = io.Copy(p.outputWriter, ptmx)
-}
+// run executes the process, streaming events to yield. All run state is local.
+func (p *Process) run(ctx context.Context, yield func(Event, error) bool) {
+	// The Cancellor is the single cancellation mechanism, so no CommandContext.
+	// #nosec G204 - Command and args are controlled by the caller
+	cmd := exec.Command(p.cmd, p.args...)
+	if len(p.env) > 0 {
+		cmd.Env = p.env
+	}
+	if p.workingDir != "" {
+		cmd.Dir = p.workingDir
+	}
 
-// readPipeStream reads from a pipe and accumulates data in the struct buffer fields
-func (p *Process) readPipeStream(ctx context.Context, pipe io.ReadCloser, flushChan chan<- struct{}) {
-	defer func() {
-		pipe.Close()
-		p.waiter.Done()
+	out, label, err := p.startProcess(cmd)
+	if err != nil {
+		yield(newEvent(&ProcessError{
+			Error:   err,
+			Message: "Failed to start " + label + " process",
+		}), ProcessStartError{Cmd: p.cmd, Err: err})
+		return
+	}
+	defer out.Close()
+
+	pid := cmd.Process.Pid
+	processStart := time.Now()
+
+	if p.stats != nil {
+		p.stats.processInfo.PID = pid
+		p.stats.Start(ctx)
+	}
+
+	flush := make(chan struct{}, 1)
+	done := make(chan error, 1)
+	reaped := make(chan struct{}) // closed once cmd.Wait has returned
+	exited := make(chan struct{}) // closed once the child is reaped and output drained
+	w := NewBufferWriter(flush, p.maxBufferSize)
+
+	// Reader drains output until EOF or out is closed.
+	readerDone := make(chan struct{})
+	go func() {
+		defer close(readerDone)
+		_, _ = io.Copy(w, out)
 	}()
-	reader := bufio.NewReader(pipe)
-	for {
+
+	// Reap the child promptly, then wait for the reader so output is complete.
+	go func() {
+		err := cmd.Wait()
+		close(reaped)
+		<-readerDone
+		done <- err
+		close(exited)
+	}()
+
+	// stop terminates the child via the Cancellor and drains goroutines.
+	stop := func() {
 		select {
-		case <-ctx.Done():
-			return
+		case <-reaped:
+			// Already reaped; avoid signalling a reusable pid.
 		default:
-		}
-
-		data, err := reader.ReadBytes('\n')
-		if err != nil {
-			if err == io.EOF {
-				// End of stream, add any remaining data
-				if len(data) > 0 {
-					p.bufferMu.Lock()
-					// For simplicity, combine all pipe data into stdout buffer
-					// (since we combine them anyway in the output event)
-					p.stdoutBuffer = append(p.stdoutBuffer, data...)
-					if len(p.stdoutBuffer) >= p.maxBufferSize {
-						select {
-						case flushChan <- struct{}{}:
-						default:
-						}
-					}
-					p.bufferMu.Unlock()
-				}
-			}
-			return
-		}
-
-		p.bufferMu.Lock()
-		// For simplicity, combine all pipe data into stdout buffer
-		// (since we combine them anyway in the output event)
-		p.stdoutBuffer = append(p.stdoutBuffer, data...)
-		if len(p.stdoutBuffer) >= p.maxBufferSize {
-			// Trigger immediate flush
-			select {
-			case flushChan <- struct{}{}:
-			default:
+			cancelCtx := context.WithoutCancel(ctx)
+			if p.cancellor != nil {
+				_ = p.cancellor.Cancel(cancelCtx, pid) // Best effort cancellation
+			} else {
+				_ = cmd.Process.Kill()
 			}
 		}
-		p.bufferMu.Unlock()
+		_ = out.Close() // unblocks the reader if a descendant holds the tty/pipe
+		<-exited
 	}
+
+	if !yield(Event{
+		Timestamp: processStart,
+		Event:     &ProcessStart{PID: pid, Command: p.cmd, Args: p.args},
+	}, nil) {
+		stop()
+		return
+	}
+	if p.stats != nil {
+		p.stats.RecordEvent(ctx, "process_start")
+	}
+
+	endTime, ok, waitErr := streamOutput(ctx, yield, w, flush, done, processStart, p.flushInterval, p.maxBufferSize, p.stats)
+	if !ok {
+		stop()
+		return
+	}
+
+	emitProcessEnd(ctx, yield, p.stats, waitErr, processStart, endTime, label)
 }
 
 // GetStats returns a copy of the current process statistics
