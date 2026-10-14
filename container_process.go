@@ -13,10 +13,9 @@ import (
 	"time"
 
 	cerrdefs "github.com/containerd/errdefs"
-	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/api/types/image"
-	"github.com/docker/docker/client"
-	"github.com/docker/docker/pkg/stdcopy"
+	"github.com/moby/moby/api/pkg/stdcopy"
+	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/client"
 )
 
 // ContainerProcess represents a process running inside a container
@@ -149,7 +148,7 @@ func (cp *ContainerProcess) ExecuteAndStream(ctx context.Context) iter.Seq2[Even
 
 		// 4. Start container
 		processStart := time.Now()
-		if err := dockerClient.ContainerStart(ctx, containerID, container.StartOptions{}); err != nil {
+		if _, err := dockerClient.ContainerStart(ctx, containerID, client.ContainerStartOptions{}); err != nil {
 			yield(newEvent(&ProcessError{
 				Error:   err,
 				Message: "Failed to start container",
@@ -161,9 +160,9 @@ func (cp *ContainerProcess) ExecuteAndStream(ctx context.Context) iter.Seq2[Even
 		// Only inspect container for PID if we need it for metrics
 		pid := 0
 		if cp.stats != nil {
-			inspect, err := dockerClient.ContainerInspect(ctx, containerID)
-			if err == nil && inspect.State != nil {
-				pid = inspect.State.Pid
+			inspect, err := dockerClient.ContainerInspect(ctx, containerID, client.ContainerInspectOptions{})
+			if err == nil && inspect.Container.State != nil {
+				pid = inspect.Container.State.Pid
 				cp.stats.processInfo.PID = pid
 			}
 			cp.stats.Start(ctx)
@@ -183,7 +182,7 @@ func (cp *ContainerProcess) ExecuteAndStream(ctx context.Context) iter.Seq2[Even
 		var logErr error // written before logsDone is closed
 		go func() {
 			defer close(logsDone)
-			reader, err := dockerClient.ContainerLogs(runCtx, containerID, container.LogsOptions{
+			reader, err := dockerClient.ContainerLogs(runCtx, containerID, client.ContainerLogsOptions{
 				ShowStdout: true,
 				ShowStderr: true,
 				Follow:     true,
@@ -199,7 +198,8 @@ func (cp *ContainerProcess) ExecuteAndStream(ctx context.Context) iter.Seq2[Even
 		}()
 
 		// Waiter goroutine: reports the exit once all logs are in the buffer.
-		waitCh, errCh := dockerClient.ContainerWait(runCtx, containerID, container.WaitConditionNotRunning)
+		waitRes := dockerClient.ContainerWait(runCtx, containerID, client.ContainerWaitOptions{Condition: container.WaitConditionNotRunning})
+		waitCh, errCh := waitRes.Result, waitRes.Error
 		go func() {
 			defer close(exited)
 			var result error
@@ -218,7 +218,7 @@ func (cp *ContainerProcess) ExecuteAndStream(ctx context.Context) iter.Seq2[Even
 		// stop terminates the container and drains the background goroutines.
 		stop := func() {
 			stopTimeout := 2
-			_ = dockerClient.ContainerStop(context.WithoutCancel(ctx), containerID, container.StopOptions{Timeout: &stopTimeout})
+			_, _ = dockerClient.ContainerStop(context.WithoutCancel(ctx), containerID, client.ContainerStopOptions{Timeout: &stopTimeout})
 			cancelRun()
 			<-exited
 		}
@@ -346,7 +346,7 @@ func (cp *ContainerProcess) createContainer(ctx context.Context, dockerClient *c
 	}
 
 	// Create container
-	resp, err := dockerClient.ContainerCreate(ctx, config, hostConfig, nil, nil, "")
+	resp, err := dockerClient.ContainerCreate(ctx, client.ContainerCreateOptions{Config: config, HostConfig: hostConfig})
 	if err != nil {
 		return "", fmt.Errorf("container create failed: %w", err)
 	}
@@ -383,7 +383,7 @@ func (cp *ContainerProcess) pullImageWithProgress(
 	}
 
 	// Pull the image
-	pullReader, err := dockerClient.ImagePull(ctx, cp.image, image.PullOptions{})
+	pullReader, err := dockerClient.ImagePull(ctx, cp.image, client.ImagePullOptions{})
 	if err != nil {
 		return fmt.Errorf("failed to pull image %s: %w", cp.image, err)
 	}
@@ -467,11 +467,11 @@ func (cp *ContainerProcess) removeContainer(ctx context.Context, dockerClient *c
 	cleanupCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
-	removeOptions := container.RemoveOptions{
+	removeOptions := client.ContainerRemoveOptions{
 		Force:         true,
 		RemoveVolumes: true,
 	}
 
-	_ = dockerClient.ContainerRemove(cleanupCtx, containerID, removeOptions)
+	_, _ = dockerClient.ContainerRemove(cleanupCtx, containerID, removeOptions)
 	// Errors are intentionally ignored - log removal failures are not critical
 }

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	cerrdefs "github.com/containerd/errdefs"
+	"github.com/moby/moby/client"
 	"github.com/stretchr/testify/require"
 )
 
@@ -18,7 +19,7 @@ func requireContainerGone(t *testing.T, containerID string, timeout time.Duratio
 	defer cli.Close()
 
 	require.Eventually(t, func() bool {
-		_, err := cli.ContainerInspect(context.Background(), containerID)
+		_, err := cli.ContainerInspect(context.Background(), containerID, client.ContainerInspectOptions{})
 		return cerrdefs.IsNotFound(err)
 	}, timeout, 100*time.Millisecond, "container %s should be removed", containerID)
 }

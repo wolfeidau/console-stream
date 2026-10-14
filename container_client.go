@@ -3,7 +3,7 @@ package consolestream
 import (
 	"fmt"
 
-	"github.com/docker/docker/client"
+	"github.com/moby/moby/client"
 )
 
 // initDockerClient initializes a Docker or Podman client based on runtime
@@ -21,8 +21,5 @@ func initDockerClient(runtime string) (*client.Client, error) {
 		return nil, fmt.Errorf("unsupported container runtime: %s (must be 'docker' or 'podman')", runtime)
 	}
 
-	// Auto-negotiate API version for compatibility
-	opts = append(opts, client.WithAPIVersionNegotiation())
-
-	return client.NewClientWithOpts(opts...)
+	return client.New(opts...)
 }
