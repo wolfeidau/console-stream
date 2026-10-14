@@ -7,6 +7,7 @@ import (
 	"maps"
 	"strconv"
 	"time"
+	"unicode/utf8"
 )
 
 // AscicastV3Line represents either a header or event line in asciicast v3 format
@@ -98,6 +99,9 @@ func ToAscicastV3(events iter.Seq2[Event, error], metadata AscicastV3Metadata) i
 		var lastEventTime time.Time
 		lastEventTimeSet := false
 
+		// carry holds a trailing incomplete UTF-8 sequence until the next output event.
+		var carry []byte
+
 		for event, err := range events {
 			if err != nil {
 				if !yield(nil, err) {
@@ -118,8 +122,13 @@ func ToAscicastV3(events iter.Seq2[Event, error], metadata AscicastV3Metadata) i
 			// Transform based on event type
 			switch e := event.Event.(type) {
 			case *OutputData:
+				var data []byte
+				data, carry = splitIncompleteUTF8(append(carry, e.Data...))
+				if len(data) == 0 {
+					continue
+				}
 				lastEventTime = event.Timestamp
-				if !yield(NewOutputEvent(interval, string(e.Data)), nil) {
+				if !yield(NewOutputEvent(interval, string(data)), nil) {
 					return
 				}
 
@@ -130,6 +139,12 @@ func ToAscicastV3(events iter.Seq2[Event, error], metadata AscicastV3Metadata) i
 				}
 
 			case *ProcessEnd:
+				if len(carry) > 0 {
+					if !yield(NewOutputEvent(interval, string(carry)), nil) {
+						return
+					}
+					interval = 0
+				}
 				if !yield(NewExitEvent(interval, e.ExitCode), nil) {
 					return
 				}
@@ -145,7 +160,28 @@ func ToAscicastV3(events iter.Seq2[Event, error], metadata AscicastV3Metadata) i
 				continue
 			}
 		}
+
+		// Input ended without an exit event: don't drop held-back bytes.
+		if len(carry) > 0 {
+			yield(NewOutputEvent(0, string(carry)), nil)
+		}
 	}
+}
+
+// splitIncompleteUTF8 splits b into a complete part and a trailing incomplete
+// (but potentially valid) UTF-8 sequence of at most utf8.UTFMax-1 bytes.
+// Bytes that can never form a valid rune are left in the complete part.
+func splitIncompleteUTF8(b []byte) (complete, rest []byte) {
+	for i := len(b) - 1; i >= 0 && i >= len(b)-(utf8.UTFMax-1); i-- {
+		if !utf8.RuneStart(b[i]) {
+			continue
+		}
+		if !utf8.FullRune(b[i:]) {
+			return b[:i], append([]byte(nil), b[i:]...)
+		}
+		break
+	}
+	return b, nil
 }
 
 // WriteAscicastV3 is a convenience function to write asciicast v3 to any writer

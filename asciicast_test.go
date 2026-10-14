@@ -483,6 +483,102 @@ func TestWriteAscicastV3(t *testing.T) {
 	})
 }
 
+func TestSplitIncompleteUTF8(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		in       string
+		complete string
+		rest     string
+	}{
+		{"empty", "", "", ""},
+		{"ascii", "hello", "hello", ""},
+		{"complete 2-byte", "caf\xc3\xa9", "caf\xc3\xa9", ""},
+		{"complete 4-byte", "\U0001F600", "\U0001F600", ""},
+		{"2-byte prefix", "ab\xc3", "ab", "\xc3"},
+		{"3-byte prefix 1", "ab\xe2", "ab", "\xe2"},
+		{"3-byte prefix 2", "ab\xe2\x82", "ab", "\xe2\x82"},
+		{"4-byte prefix 1", "\xf0", "", "\xf0"},
+		{"4-byte prefix 2", "a\xf0\x9f", "a", "\xf0\x9f"},
+		{"4-byte prefix 3", "a\xf0\x9f\x98", "a", "\xf0\x9f\x98"},
+		{"invalid trailing byte", "ab\xff", "ab\xff", ""},
+		{"lone continuation", "ab\xa9", "ab\xa9", ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			complete, rest := splitIncompleteUTF8([]byte(tt.in))
+			require.Equal(t, tt.complete, string(complete))
+			require.Equal(t, tt.rest, string(rest))
+		})
+	}
+}
+
+func TestToAscicastV3SplitUTF8(t *testing.T) {
+	t.Parallel()
+
+	start := time.Date(2024, 1, 1, 12, 0, 0, 0, time.UTC)
+	stream := func(evs ...StreamEvent) iter.Seq2[Event, error] {
+		return func(yield func(Event, error) bool) {
+			for i, e := range evs {
+				if !yield(Event{Timestamp: start.Add(time.Duration(i) * time.Second), Event: e}, nil) {
+					return
+				}
+			}
+		}
+	}
+	// outputs returns the concatenated "o" data and the event type codes.
+	outputs := func(t *testing.T, lines []AscicastV3Line) (string, []string) {
+		var sb strings.Builder
+		var kinds []string
+		for _, l := range lines[1:] {
+			b, err := l.MarshalJSON()
+			require.NoError(t, err)
+			var ev [3]any
+			require.NoError(t, json.Unmarshal(b, &ev))
+			kinds = append(kinds, ev[1].(string))
+			if ev[1] == "o" {
+				sb.WriteString(ev[2].(string))
+			}
+		}
+		return sb.String(), kinds
+	}
+
+	t.Run("rune split across events is preserved", func(t *testing.T) {
+		lines := collectAscicastLines(ToAscicastV3(stream(
+			&OutputData{Data: []byte("\xc3")},
+			&OutputData{Data: []byte("\xa9 done")},
+			&ProcessEnd{ExitCode: 0},
+		), AscicastV3Metadata{}))
+
+		text, kinds := outputs(t, lines)
+		require.Equal(t, "é done", text)
+		require.NotContains(t, text, "�")
+		require.Equal(t, []string{"o", "x"}, kinds)
+	})
+
+	t.Run("trailing incomplete prefix is flushed before exit", func(t *testing.T) {
+		lines := collectAscicastLines(ToAscicastV3(stream(
+			&OutputData{Data: []byte("ok\xc3")},
+			&ProcessEnd{ExitCode: 0},
+		), AscicastV3Metadata{}))
+
+		text, kinds := outputs(t, lines)
+		require.Equal(t, "ok�", text)
+		require.Equal(t, []string{"o", "o", "x"}, kinds)
+	})
+
+	t.Run("trailing incomplete prefix is flushed when input ends", func(t *testing.T) {
+		lines := collectAscicastLines(ToAscicastV3(stream(
+			&OutputData{Data: []byte("ok\xc3")},
+		), AscicastV3Metadata{}))
+
+		text, _ := outputs(t, lines)
+		require.Equal(t, "ok�", text)
+	})
+}
+
 // Helper function to collect asciicast lines from iterator
 func collectAscicastLines(seq iter.Seq2[AscicastV3Line, error]) []AscicastV3Line {
 	var lines []AscicastV3Line
