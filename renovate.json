@@ -49,8 +49,7 @@
     {
       "description": "Group test and dev tooling",
       "matchPackageNames": [
-        "github.com/stretchr/testify",
-        "github.com/mfridman/tparse"
+        "github.com/stretchr/testify"
       ],
       "groupName": "testing"
     },

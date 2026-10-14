@@ -14,7 +14,7 @@ steps:
         command: go test -json -coverprofile=coverage.out -coverpkg=./... ./... > tests.json
         plugins:
           - mise#v1.1.5: ~
-          - ./.buildkite/plugins/go-test-annotate:
+          - wolfeidau/go-test-annotate#v1.0.0:
               file: tests.json
 
       - label: ":hammer: build"
