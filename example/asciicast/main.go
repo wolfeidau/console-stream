@@ -93,7 +93,7 @@ echo -e "\033[32mStarting colored demo...\033[0m"
 echo -e "\033[34mThis is blue text\033[0m"
 echo -e "\033[31mThis is red text\033[0m"
 echo -e "\033[33mDemo completed!\033[0m"
-`}, consolestream.WithCancellor(cancellor), consolestream.WithPTYSize(&size))
+`}, consolestream.WithCancellor(cancellor), consolestream.WithPTYMode(), consolestream.WithPTYSize(&size))
 
 	events2 := process2.ExecuteAndStream(ctx)
 
@@ -126,59 +126,25 @@ echo -e "\033[33mDemo completed!\033[0m"
 		fmt.Println("Successfully recorded colored_demo.cast")
 	}
 
-	// Example 3: Show terminal resize handling
-	fmt.Println("\n3. Demonstrating terminal resize events...")
+	// Example 3: PTY size
+	fmt.Println("\n3. Running with a custom terminal size (60x20)...")
 
-	// Start with smaller size
 	smallSize := pty.Winsize{Rows: 20, Cols: 60}
-	process3 := consolestream.NewProcess("bash", []string{"-c", "tput cols && tput lines && echo 'Terminal info displayed'"},
+	process3 := consolestream.NewProcess("bash", []string{"-c", "tput cols; tput lines"},
 		consolestream.WithCancellor(cancellor),
+		consolestream.WithPTYMode(),
 		consolestream.WithPTYSize(&smallSize))
 
-	events3 := process3.ExecuteAndStream(ctx)
-
-	metadata3 := consolestream.AscicastV3Metadata{
-		Term: consolestream.TermInfo{
-			Cols: int(smallSize.Cols),
-			Rows: int(smallSize.Rows),
-		},
-		Command: "tput cols && tput lines",
-		Title:   "Terminal Size Demo",
-		Tags:    []string{"demo", "resize"},
-	}
-
-	// Count different event types
-	outputEvents := 0
-	resizeEvents := 0
-	exitEvents := 0
-
-	for line, err := range consolestream.ToAscicastV3(events3, metadata3) {
+	// The PTY size is fixed for the run; the library does not emit resize events.
+	for event, err := range process3.ExecuteAndStream(ctx) {
 		if err != nil {
 			fmt.Printf("Error: %v\n", err)
-			continue
+			break
 		}
-
-		data, _ := line.MarshalJSON()
-		lineStr := string(data)
-
-		switch lineStr[0] {
-		case '{':
-			fmt.Printf("  Header: %s\n", lineStr)
-		case '[':
-			// Parse event type from JSON array
-			eventType := lineStr[len(lineStr)-5 : len(lineStr)-2]
-			switch eventType {
-			case `"o"`:
-				outputEvents++
-			case `"r"`:
-				resizeEvents++
-			case `"x"`:
-				exitEvents++
-			}
+		if out, ok := event.Event.(*consolestream.OutputData); ok {
+			fmt.Printf("  Terminal reports: %q\n", out.Data)
 		}
 	}
-
-	fmt.Printf("  Events recorded: %d output, %d resize, %d exit\n", outputEvents, resizeEvents, exitEvents)
 
 	fmt.Println("\n=== Examples completed! ===")
 	fmt.Println("Generated files:")

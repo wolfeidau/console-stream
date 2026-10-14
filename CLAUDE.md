@@ -228,7 +228,10 @@ func NewExitEvent(interval float64, exitCode int) AscicastV3Event
 func NewMarkerEvent(interval float64, label string) AscicastV3Event
 ```
 
-A `ProcessError` ends the recording with an `"m"` marker instead of an `"x"` exit event.
+`ToAscicastV3` maps each event type to a line: output to `"o"`, `TerminalResizeEvent` to `"r"`, and process end to `"x"`. A `ProcessError` ends the recording with an `"m"` marker instead of an `"x"` exit event. The library does not emit resize events itself (PTY size is fixed by `WithPTYSize`); callers wrapping the event stream may inject them.
+
+Output is grouped per flush interval (default 1s), so animations and progress bars play back in 1s steps. Use `WithFlushInterval(50*time.Millisecond)` when recording for finer timing. Always record with `WithPTYMode()`.
+
 
 ### Errors
 
