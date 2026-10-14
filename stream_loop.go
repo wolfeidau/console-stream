@@ -9,8 +9,8 @@ import (
 
 // streamOutput yields OutputData and Heartbeat events until done fires.
 //
-// It owns the flush ticker, time- and size-based flushing, heartbeat logic and
-// the final flush. On done it returns the end time (used for
+// It owns the batch ticker, time- and size-based batching, the heartbeat ticker
+// and the final flush. On done it returns the end time (used for
 // the final OutputData and the terminal event) and the wait error, with ok == true. It returns
 // ok == false if the consumer stopped iterating or ctx was cancelled; the
 // caller must then stop the child and drain its goroutines.
@@ -25,11 +25,17 @@ func streamOutput(
 	done <-chan error,
 	start time.Time,
 	interval time.Duration,
+	heartbeat time.Duration,
 	maxBuf int,
 	stats *ProcessStats,
 ) (time.Time, bool, error) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
+	hbTicker := time.NewTicker(heartbeat)
+	defer hbTicker.Stop()
+
+	// active records output delivered since the previous heartbeat tick.
+	var active bool
 
 	emit := func(data []byte, segs []OutputSegment) bool {
 		if !yield(newEvent(&OutputData{Data: data, Segments: segs}), nil) {
@@ -38,11 +44,9 @@ func streamOutput(
 		if stats != nil {
 			stats.RecordOutput(ctx, int64(len(data)))
 		}
+		active = true
 		return true
 	}
-
-	// Heartbeat when there was no output in the previous and current tick.
-	var emittedLastTick bool
 
 	for {
 		select {
@@ -50,15 +54,15 @@ func streamOutput(
 			return time.Time{}, false, nil
 
 		case <-ticker.C:
-			emitted := false
 			if data, segs := w.FlushSegments(); data != nil {
 				if !emit(data, segs) {
 					return time.Time{}, false, nil
 				}
-				emitted = true
 			}
 
-			if !emittedLastTick && !emitted {
+		case <-hbTicker.C:
+			// Heartbeat when nothing was delivered or buffered since the last tick.
+			if !active && w.Len() == 0 {
 				if !yield(newEvent(&HeartbeatEvent{
 					ProcessAlive: true,
 					ElapsedTime:  time.Since(start),
@@ -66,7 +70,7 @@ func streamOutput(
 					return time.Time{}, false, nil
 				}
 			}
-			emittedLastTick = emitted
+			active = false
 
 		case <-flush:
 			if w.Len() >= maxBuf {
@@ -74,7 +78,6 @@ func streamOutput(
 					if !emit(data, segs) {
 						return time.Time{}, false, nil
 					}
-					emittedLastTick = true
 				}
 			}
 

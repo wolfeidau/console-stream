@@ -32,8 +32,9 @@ type ContainerProcess struct {
 	workingDir string
 
 	// Shared config
-	flushInterval time.Duration
-	maxBufferSize int
+	flushInterval     time.Duration
+	heartbeatInterval time.Duration
+	maxBufferSize     int
 
 	// State
 	stats *ProcessStats
@@ -49,15 +50,16 @@ func NewContainerProcess(cmd string, args []string, opts ...ContainerProcessOpti
 	}
 
 	process := &ContainerProcess{
-		cmd:           cmd,
-		args:          args,
-		image:         cfg.image,
-		runtime:       cfg.runtime,
-		mounts:        cfg.mounts,
-		env:           cfg.env,
-		workingDir:    cfg.workingDir,
-		flushInterval: cfg.flushInterval,
-		maxBufferSize: cfg.maxBufferSize,
+		cmd:               cmd,
+		args:              args,
+		image:             cfg.image,
+		runtime:           cfg.runtime,
+		mounts:            cfg.mounts,
+		env:               cfg.env,
+		workingDir:        cfg.workingDir,
+		flushInterval:     cfg.flushInterval,
+		heartbeatInterval: cfg.heartbeatInterval,
+		maxBufferSize:     cfg.maxBufferSize,
 	}
 
 	// Initialize stats if meter provided (graceful degradation)
@@ -241,7 +243,7 @@ func (cp *ContainerProcess) ExecuteAndStream(ctx context.Context) iter.Seq2[Even
 		}
 
 		// 7. Stream output until the container exits
-		endTime, ok, waitErr := streamOutput(ctx, yield, w, flush, done, processStart, cp.flushInterval, cp.maxBufferSize, cp.stats)
+		endTime, ok, waitErr := streamOutput(ctx, yield, w, flush, done, processStart, cp.flushInterval, cp.heartbeatInterval, cp.maxBufferSize, cp.stats)
 		if !ok {
 			stop()
 			return

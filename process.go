@@ -79,15 +79,16 @@ func WithPTYSize(size *pty.Winsize) ProcessOption {
 
 // Process represents a unified process that can run in either PTY or pipe mode
 type Process struct {
-	cmd           string
-	args          []string
-	mode          ProcessMode
-	cancellor     Cancellor
-	env           []string
-	workingDir    string
-	ptySize       *pty.Winsize
-	flushInterval time.Duration
-	maxBufferSize int
+	cmd               string
+	args              []string
+	mode              ProcessMode
+	cancellor         Cancellor
+	env               []string
+	workingDir        string
+	ptySize           *pty.Winsize
+	flushInterval     time.Duration
+	heartbeatInterval time.Duration
+	maxBufferSize     int
 
 	// Metrics and observability (optional)
 	stats *ProcessStats
@@ -106,15 +107,16 @@ func NewProcess(cmd string, args []string, opts ...ProcessOption) *Process {
 	}
 
 	process := &Process{
-		cmd:           cmd,
-		args:          args,
-		mode:          cfg.mode,
-		cancellor:     cfg.cancellor,
-		env:           cfg.env,
-		workingDir:    cfg.workingDir,
-		ptySize:       cfg.ptySize,
-		flushInterval: cfg.flushInterval,
-		maxBufferSize: cfg.maxBufferSize,
+		cmd:               cmd,
+		args:              args,
+		mode:              cfg.mode,
+		cancellor:         cfg.cancellor,
+		env:               cfg.env,
+		workingDir:        cfg.workingDir,
+		ptySize:           cfg.ptySize,
+		flushInterval:     cfg.flushInterval,
+		heartbeatInterval: cfg.heartbeatInterval,
+		maxBufferSize:     cfg.maxBufferSize,
 	}
 
 	// Initialize stats if meter is provided
@@ -271,7 +273,7 @@ func (p *Process) run(ctx context.Context, yield func(Event, error) bool) {
 		p.stats.RecordEvent(ctx, "process_start")
 	}
 
-	endTime, ok, waitErr := streamOutput(ctx, yield, w, flush, done, processStart, p.flushInterval, p.maxBufferSize, p.stats)
+	endTime, ok, waitErr := streamOutput(ctx, yield, w, flush, done, processStart, p.flushInterval, p.heartbeatInterval, p.maxBufferSize, p.stats)
 	if !ok {
 		stop()
 		return

@@ -75,7 +75,8 @@ process := consolestream.NewProcess("npm", []string{"install"},
 | `WithCancellor(c)` | Custom cancellation (default: `NewLocalCancellor(5s)`) |
 | `WithEnv([]string)` / `WithEnvVar(k, v)` / `WithEnvMap(m)` | Environment variables |
 | `WithWorkingDir(dir)` | Working directory |
-| `WithFlushInterval(d)` | Output batch interval (default 1s): bounds live latency and event volume; also sets heartbeat cadence |
+| `WithFlushInterval(d)` | Output batch interval (default 1s): bounds live latency and event volume |
+| `WithHeartbeatInterval(d)` | Heartbeat interval (default 1s), independent of the batch interval |
 | `WithMaxBufferSize(n)` | Deliver a batch early when it reaches n bytes (default 10MB) |
 | `WithMeter(metric.Meter)` | OpenTelemetry metrics |
 
@@ -123,6 +124,7 @@ Event order: `ContainerCreate → ProcessStart → OutputData/HeartbeatEvent →
 | `WithContainerWorkingDir(d)` | Working directory in container |
 | `WithContainerEnv([]string)` / `WithContainerEnvMap(m)` | Environment variables |
 | `WithContainerFlushInterval(d)` | Output batch interval (default 1s) |
+| `WithContainerHeartbeatInterval(d)` | Heartbeat interval (default 1s) |
 | `WithContainerMaxBufferSize(n)` | Maximum batch size (default 10MB) |
 | `WithContainerMeter(metric.Meter)` | OpenTelemetry metrics |
 
@@ -165,7 +167,7 @@ Recordings use per-read timestamps from `OutputData.Segments`, so the batch inte
 |-------|-------------|
 | `ProcessStart` | Process started (PID, command, args) |
 | `OutputData` | Output bytes (stdout and stderr are combined); `Segments` carries per-read timing |
-| `HeartbeatEvent` | Process alive, no output in the last two ticks |
+| `HeartbeatEvent` | Process alive, no output since the previous heartbeat tick |
 | `ProcessEnd` | Exit code, duration, success. A non-zero exit is a `ProcessEnd`, not an error. A signal-terminated process reports `128 + signal` (137 for SIGKILL), matching shells and container mode |
 | `ProcessError` | Failure that is not a non-zero exit |
 | `TerminalResizeEvent` | Terminal size change (PTY) |
@@ -176,7 +178,7 @@ Recordings use per-read timestamps from `OutputData.Segments`, so the batch inte
 
 - Output is delivered in batches: one `OutputData` event per batch interval (`WithFlushInterval`, default 1s), earlier if the buffer reaches the max size (default 10MB), and a final batch on exit.
 - The batch interval trades live latency for event volume. It does not affect timing accuracy: `OutputData.Segments` records when each chunk was read.
-- A `HeartbeatEvent` fires after two consecutive batch intervals with no output, so a short interval also means frequent heartbeats.
+- Heartbeats run on their own interval (`WithHeartbeatInterval`, default 1s): on each tick a `HeartbeatEvent` fires if no output was delivered or buffered since the previous tick. A short batch interval does not add heartbeats.
 - Pipe mode is not line-buffered: events can split mid-line. Reassemble lines in the consumer if needed.
 - Stdout and stderr share one pipe, so their relative order is preserved but they cannot be distinguished.
 

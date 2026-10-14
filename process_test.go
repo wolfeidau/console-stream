@@ -377,3 +377,49 @@ func TestProcessPTYOutputSegmentTimes(t *testing.T) {
 	require.GreaterOrEqual(t, len(times), 2)
 	require.GreaterOrEqual(t, times[len(times)-1].Sub(times[0]), 200*time.Millisecond)
 }
+
+func TestProcessHeartbeatInterval(t *testing.T) {
+	t.Parallel()
+
+	countHeartbeats := func(t *testing.T, p *Process) int {
+		t.Helper()
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		n := 0
+		for event, err := range p.ExecuteAndStream(ctx) {
+			require.NoError(t, err)
+			if IsHeartbeatEvent(event.Event) {
+				n++
+			}
+		}
+		return n
+	}
+
+	t.Run("independent of batch interval", func(t *testing.T) {
+		t.Parallel()
+		// Ticks at ~1s and ~2s; a 50ms batch interval must not add heartbeats.
+		p := NewProcess("sleep", []string{"2.5"},
+			WithFlushInterval(50*time.Millisecond),
+			WithHeartbeatInterval(time.Second))
+		n := countHeartbeats(t, p)
+		require.GreaterOrEqual(t, n, 1)
+		require.LessOrEqual(t, n, 3)
+	})
+
+	t.Run("none while output is delivered", func(t *testing.T) {
+		t.Parallel()
+		p := NewProcess("bash", []string{"-c", "for i in $(seq 15); do echo $i; sleep 0.1; done"},
+			WithFlushInterval(50*time.Millisecond),
+			WithHeartbeatInterval(500*time.Millisecond))
+		require.Equal(t, 0, countHeartbeats(t, p))
+	})
+
+	t.Run("buffered output counts as activity", func(t *testing.T) {
+		t.Parallel()
+		// Output stays buffered under the 5s batch interval; no heartbeat should fire.
+		p := NewProcess("bash", []string{"-c", "for i in $(seq 15); do echo $i; sleep 0.1; done"},
+			WithFlushInterval(5*time.Second),
+			WithHeartbeatInterval(500*time.Millisecond))
+		require.Equal(t, 0, countHeartbeats(t, p))
+	})
+}
