@@ -1,5 +1,3 @@
-image: "buildkite/hosted-agent-base-images:ubuntu-jammy"
-
 steps:
   - group: ":mag: QA"
     key: quality_checks
@@ -11,14 +9,13 @@ steps:
 
       - label: ":go: test"
         artifact_paths:
-          - cover-tree.svg
           - coverage.out
-        commands:
-          - go test -coverprofile coverage.out -coverpkg=./... ./...
-          - go run github.com/nikolaydubina/go-cover-treemap -coverprofile coverage.out > cover-tree.svg
-          - echo '<details><summary>Coverage tree map</summary><img src="artifact://cover-tree.svg" alt="Test coverage tree map" width="70%"></details>' | buildkite-agent annotate --style "info"
+          - tests.json
+        command: go test -json -coverprofile=coverage.out -coverpkg=./... ./... > tests.json
         plugins:
           - mise#v1.1.5: ~
+          - ./.buildkite/plugins/go-test-annotate:
+              file: tests.json
 
       - label: ":hammer: build"
         command: make build

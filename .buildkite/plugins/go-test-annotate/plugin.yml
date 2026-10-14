@@ -1,0 +1,18 @@
+name: Go Test Annotate
+description: Summarises go test -json output with tparse and annotates the build.
+author: github.com/wolfeidau
+requirements: []
+configuration:
+  properties:
+    file:
+      type: string
+      description: Path to the go test -json output.
+    context:
+      type: string
+      description: Buildkite annotation context. Defaults to go-tests.
+    title:
+      type: string
+      description: Annotation heading. Defaults to "Go tests".
+  required:
+    - file
+  additionalProperties: false

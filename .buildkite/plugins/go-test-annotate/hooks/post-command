@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+set -u -o pipefail
+
+FILE="${BUILDKITE_PLUGIN_GO_TEST_ANNOTATE_FILE}"
+CONTEXT="${BUILDKITE_PLUGIN_GO_TEST_ANNOTATE_CONTEXT:-go-tests}"
+TITLE="${BUILDKITE_PLUGIN_GO_TEST_ANNOTATE_TITLE:-Go tests}"
+# Buildkite rejects annotations over 1MiB.
+MAX_BYTES=1000000
+
+if [[ ! -s "$FILE" ]]; then
+  echo "go-test-annotate: $FILE not found or empty, skipping"
+  exit 0
+fi
+
+STYLE=success
+if [[ "${BUILDKITE_COMMAND_EXIT_STATUS:-0}" != "0" ]]; then
+  STYLE=error
+fi
+
+TMPFILE=$(mktemp)
+trap 'rm -f "$TMPFILE"' EXIT
+
+echo "--- :go: Test summary"
+# tparse exits non-zero when tests fail; the step exit status is already set by the command.
+go tool tparse -file "$FILE" -all -notests -nocolor || true
+
+SUMMARY=$(go tool tparse -file "$FILE" -all -notests -format markdown)
+if [[ -z "$SUMMARY" ]]; then
+  echo "go-test-annotate: tparse produced no output, skipping"
+  exit 0
+fi
+printf '## %s\n\n%s\n' "$TITLE" "$SUMMARY" > "$TMPFILE"
+
+if (( $(wc -c < "$TMPFILE") > MAX_BYTES )); then
+  head -c "$MAX_BYTES" "$TMPFILE" > "$TMPFILE.trunc"
+  printf '\n\n_Truncated, see %s in artifacts._\n' "$FILE" >> "$TMPFILE.trunc"
+  mv "$TMPFILE.trunc" "$TMPFILE"
+fi
+
+if ! buildkite-agent annotate --style "$STYLE" --context "$CONTEXT" < "$TMPFILE"; then
+  echo "go-test-annotate: failed to create annotation"
+fi
+
+exit 0
