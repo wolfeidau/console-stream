@@ -208,6 +208,7 @@ func (cp *ContainerProcess) ExecuteAndStream(ctx context.Context) iter.Seq2[Even
 				<-logsDone
 				result = &containerExit{code: res.StatusCode, logErr: logErr}
 			case err := <-errCh:
+				cancelRun() // the follow stream never ends while the container runs
 				<-logsDone
 				result = err
 			}
@@ -249,6 +250,7 @@ func (cp *ContainerProcess) ExecuteAndStream(ctx context.Context) iter.Seq2[Even
 		exit, isExit := waitErr.(*containerExit)
 		if !isExit {
 			if cp.stats != nil {
+				cp.stats.Stop(ctx)
 				cp.stats.RecordError(ctx, "container_wait_error")
 			}
 			yield(Event{Timestamp: endTime, Event: &ProcessError{
