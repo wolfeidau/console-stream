@@ -4,6 +4,9 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"github.com/creack/pty"
@@ -15,7 +18,10 @@ func main() {
 	cancellor := consolestream.NewLocalCancellor(10 * time.Second)
 
 	// Create context with timeout
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	// Children do not receive terminal signals, so cancel on Ctrl-C.
+	sigCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	ctx, cancel := context.WithTimeout(sigCtx, 30*time.Second)
 	defer cancel()
 
 	fmt.Println("=== Example 1: Basic PTY Process ===")

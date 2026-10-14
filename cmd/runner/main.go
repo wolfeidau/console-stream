@@ -9,7 +9,9 @@ import (
 	"iter"
 	"log/slog"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/creack/pty"
@@ -212,8 +214,13 @@ func runExec(flags ExecFlags, logger *slog.Logger) error {
 			return "default"
 		}())
 
+	// Children run in their own process group and do not receive terminal
+	// signals, so cancel the context on SIGINT/SIGTERM to stop them.
+	sigCtx, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stopSignals()
+
 	// Create context with timeout
-	ctx, cancel := context.WithTimeout(context.Background(), timeoutDuration)
+	ctx, cancel := context.WithTimeout(sigCtx, timeoutDuration)
 	defer cancel()
 
 	logger.Info("Executing process",

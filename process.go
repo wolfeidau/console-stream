@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/creack/pty"
@@ -92,7 +93,10 @@ type Process struct {
 	stats *ProcessStats
 }
 
-// NewProcess creates a new unified process with functional options
+// NewProcess creates a new unified process with functional options.
+// Children run in their own process group (pipe: Setpgid, PTY: Setsid) and so
+// do not receive terminal-generated signals; cancel the ExecuteAndStream
+// context on SIGINT/SIGTERM (e.g. signal.NotifyContext) to stop them.
 func NewProcess(cmd string, args []string, opts ...ProcessOption) *Process {
 	cfg := &processConfig{}
 	cfg.applyDefaults()
@@ -132,6 +136,12 @@ func NewProcess(cmd string, args []string, opts ...ProcessOption) *Process {
 }
 
 // ExecuteAndStream starts a process and returns an iterator over Event objects.
+//
+// The child runs in its own process group (pipe mode: Setpgid; PTY mode:
+// Setsid), so it does not receive terminal-generated signals such as Ctrl-C.
+// Callers should cancel ctx on SIGINT/SIGTERM (e.g. signal.NotifyContext) so
+// the Cancellor can stop the child and its descendants.
+//
 // Breaking out of the loop or cancelling ctx stops the child via the Cancellor
 // and waits for all goroutines to finish before the iterator returns.
 func (p *Process) ExecuteAndStream(ctx context.Context) iter.Seq2[Event, error] {
@@ -160,6 +170,12 @@ func (p *Process) startProcess(cmd *exec.Cmd) (r *os.File, label string, err err
 	}
 	cmd.Stdout = pw
 	cmd.Stderr = pw
+	// Make the child a process-group leader so Cancel can signal the group.
+	// (PTY mode gets this from pty.Start's Setsid.)
+	if cmd.SysProcAttr == nil {
+		cmd.SysProcAttr = &syscall.SysProcAttr{}
+	}
+	cmd.SysProcAttr.Setpgid = true
 	err = cmd.Start()
 	_ = pw.Close() // child holds its own copy
 	if err != nil {
@@ -223,11 +239,17 @@ func (p *Process) run(ctx context.Context, yield func(Event, error) bool) {
 
 	// stop terminates the child via the Cancellor and drains goroutines.
 	stop := func() {
+		cancelCtx := context.WithoutCancel(ctx)
 		select {
 		case <-reaped:
-			// Already reaped; avoid signalling a reusable pid.
+			// The leader is reaped, so its pid may be reused, but its pgid
+			// cannot be while any group member lives. Signal only the group
+			// to catch descendants still holding the tty/pipe. Custom
+			// Cancellors are not called: their semantics are unknown.
+			if lc, ok := p.cancellor.(*LocalCancellor); ok {
+				_ = lc.cancelGroup(cancelCtx, pid)
+			}
 		default:
-			cancelCtx := context.WithoutCancel(ctx)
 			if p.cancellor != nil {
 				_ = p.cancellor.Cancel(cancelCtx, pid) // Best effort cancellation
 			} else {

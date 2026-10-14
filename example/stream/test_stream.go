@@ -4,6 +4,9 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	consolestream "github.com/wolfeidau/console-stream"
@@ -17,7 +20,10 @@ func main() {
 	process := consolestream.NewProcess("go", []string{"run", "cmd/tester/main.go", "--duration=5s", "--stdout-rate=3", "--stderr-rate=2"}, consolestream.WithCancellor(cancellor))
 
 	// Create context with timeout
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	// Children do not receive terminal signals, so cancel on Ctrl-C.
+	sigCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	ctx, cancel := context.WithTimeout(sigCtx, 30*time.Second)
 	defer cancel()
 
 	// Execute and stream
