@@ -3,7 +3,16 @@ package consolestream
 import (
 	"sync"
 	"time"
+
+	"github.com/wolfeidau/console-stream/internal/osc7501"
 )
+
+// pendingStatus is a program status report and the buffer offset it follows.
+type pendingStatus struct {
+	Offset int
+	Time   time.Time
+	Report osc7501.Report
+}
 
 // BufferWriter wraps buffer operations and implements io.WriteCloser
 // This can be used by both PipeProcess and PTYProcess for consistent buffer management
@@ -11,6 +20,7 @@ type BufferWriter struct {
 	mu            sync.Mutex
 	buffer        []byte
 	segments      []OutputSegment
+	statuses      []pendingStatus
 	flushChan     chan<- struct{}
 	maxBufferSize int
 }
@@ -56,14 +66,50 @@ func (w *BufferWriter) FlushAndClear() []byte {
 	return data
 }
 
+// addStatus records a program status report at the current end of the buffer
+// and signals the stream loop to deliver it promptly.
+func (w *BufferWriter) addStatus(r osc7501.Report) {
+	w.mu.Lock()
+	w.statuses = append(w.statuses, pendingStatus{Offset: len(w.buffer), Time: time.Now(), Report: r})
+	select {
+	case w.flushChan <- struct{}{}:
+	default:
+	}
+	w.mu.Unlock()
+}
+
+// hasStatus reports whether any program status is pending.
+func (w *BufferWriter) hasStatus() bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return len(w.statuses) > 0
+}
+
 // FlushSegments returns copies of the buffer contents and their read segments,
-// clearing both. It returns nil, nil when the buffer is empty.
+// clearing both (and any pending statuses). It returns nil, nil when the buffer is empty.
 func (w *BufferWriter) FlushSegments() ([]byte, []OutputSegment) {
+	data, segs, _ := w.flushBatch()
+	return data, segs
+}
+
+// flushBatch returns copies of the buffer, its segments and pending statuses,
+// clearing all three. It returns nils only when both buffer and statuses are
+// empty; a status can be pending with zero bytes.
+func (w *BufferWriter) flushBatch() ([]byte, []OutputSegment, []pendingStatus) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
+	if len(w.buffer) == 0 && len(w.statuses) == 0 {
+		return nil, nil, nil
+	}
+	var statuses []pendingStatus
+	if len(w.statuses) > 0 {
+		statuses = make([]pendingStatus, len(w.statuses))
+		copy(statuses, w.statuses)
+		w.statuses = w.statuses[:0]
+	}
 	if len(w.buffer) == 0 {
-		return nil, nil
+		return nil, nil, statuses
 	}
 
 	data := make([]byte, len(w.buffer))
@@ -72,7 +118,7 @@ func (w *BufferWriter) FlushSegments() ([]byte, []OutputSegment) {
 	copy(segs, w.segments)
 	w.buffer = w.buffer[:0]
 	w.segments = w.segments[:0]
-	return data, segs
+	return data, segs, statuses
 }
 
 // Len returns the current buffer length (thread-safe)

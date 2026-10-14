@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"github.com/wolfeidau/console-stream/internal/osc7501"
 )
 
 func TestBufferWriter_Write(t *testing.T) {
@@ -240,4 +241,79 @@ func TestBufferWriter_Segments(t *testing.T) {
 		require.Len(t, segs, 1)
 		require.Equal(t, 0, segs[0].Offset)
 	})
+}
+
+func TestBufferWriter_AddStatus(t *testing.T) {
+	t.Parallel()
+
+	flushChan := make(chan struct{}, 1)
+	writer := NewBufferWriter(flushChan, 100)
+
+	_, err := writer.Write([]byte("abc"))
+	require.NoError(t, err)
+	require.False(t, writer.hasStatus())
+
+	writer.addStatus(osc7501.Report{State: "working", Progress: -1})
+	require.True(t, writer.hasStatus())
+	require.Len(t, flushChan, 1)
+
+	_, err = writer.Write([]byte("de"))
+	require.NoError(t, err)
+
+	data, segs, statuses := writer.flushBatch()
+	require.Equal(t, []byte("abcde"), data)
+	require.NotEmpty(t, segs)
+	require.Len(t, statuses, 1)
+	require.Equal(t, 3, statuses[0].Offset)
+	require.Equal(t, "working", statuses[0].Report.State)
+	require.False(t, statuses[0].Time.IsZero())
+
+	require.False(t, writer.hasStatus())
+	require.Equal(t, 0, writer.Len())
+	data, segs, statuses = writer.flushBatch()
+	require.Nil(t, data)
+	require.Nil(t, segs)
+	require.Nil(t, statuses)
+}
+
+func TestBufferWriter_StatusOnlyBatch(t *testing.T) {
+	t.Parallel()
+
+	flushChan := make(chan struct{}, 1)
+	writer := NewBufferWriter(flushChan, 100)
+
+	writer.addStatus(osc7501.Report{State: "blocked", Progress: -1})
+	writer.addStatus(osc7501.Report{State: "done", Progress: -1}) // flushChan full: must not block
+
+	data, segs, statuses := writer.flushBatch()
+	require.Nil(t, data)
+	require.Nil(t, segs)
+	require.Len(t, statuses, 2)
+	require.Equal(t, 0, statuses[0].Offset)
+	require.Equal(t, "done", statuses[1].Report.State)
+	require.False(t, writer.hasStatus())
+}
+
+func TestBufferWriter_FlushSegmentsClearsStatuses(t *testing.T) {
+	t.Parallel()
+
+	writer := NewBufferWriter(make(chan struct{}, 1), 100)
+	_, err := writer.Write([]byte("x"))
+	require.NoError(t, err)
+	writer.addStatus(osc7501.Report{State: "working", Progress: -1})
+
+	data, _ := writer.FlushSegments()
+	require.Equal(t, []byte("x"), data)
+	require.False(t, writer.hasStatus())
+}
+
+func TestSliceSegments(t *testing.T) {
+	t.Parallel()
+
+	t0 := time.Unix(100, 0)
+	segs := []OutputSegment{{0, t0}, {4, t0.Add(time.Second)}, {8, t0.Add(2 * time.Second)}}
+
+	require.Equal(t, []OutputSegment{{0, t0}, {1, t0.Add(time.Second)}}, sliceSegments(segs, 3, 8))
+	require.Equal(t, []OutputSegment{{0, t0.Add(time.Second)}, {4, t0.Add(2 * time.Second)}}, sliceSegments(segs, 4, 12))
+	require.Nil(t, sliceSegments(nil, 0, 3))
 }

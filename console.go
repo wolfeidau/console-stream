@@ -45,6 +45,7 @@ type processConfig struct {
 	heartbeatInterval time.Duration // Heartbeat check interval
 	maxBufferSize     int           // Maximum batch size before early delivery
 	meter             metric.Meter  // OpenTelemetry meter
+	programStatus     bool          // Parse OSC 7501 program status reports
 }
 
 // applyDefaults sets sensible defaults for the process configuration
@@ -75,6 +76,7 @@ type containerProcessConfig struct {
 	heartbeatInterval time.Duration
 	maxBufferSize     int
 	meter             metric.Meter
+	programStatus     bool
 
 	// Container-specific options
 	image   string
@@ -170,6 +172,24 @@ func WithMeter(meter metric.Meter) ProcessOption {
 	}
 }
 
+// WithProgramStatus enables parsing of OSC 7501 program status reports in the
+// child output. Each report yields a ProgramStatus event, ordered exactly
+// against OutputData. The report bytes still pass through unchanged in OutputData.
+func WithProgramStatus() ProcessOption {
+	return func(cfg *processConfig) {
+		cfg.programStatus = true
+	}
+}
+
+// WithContainerProgramStatus enables parsing of OSC 7501 program status reports
+// in the container output. Each report yields a ProgramStatus event, ordered
+// exactly against OutputData. The report bytes still pass through unchanged in OutputData.
+func WithContainerProgramStatus() ContainerProcessOption {
+	return func(cfg *containerProcessConfig) {
+		cfg.programStatus = true
+	}
+}
+
 // WithPipeMode sets the process to use standard pipes (stdout/stderr)
 func WithPipeMode() ProcessOption {
 	return func(cfg *processConfig) {
@@ -205,6 +225,7 @@ const (
 	ImagePullStartEvent
 	ImagePullProgressEvent
 	ImagePullCompleteEvent
+	ProgramStatusEventType
 )
 
 func (e EventType) String() string {
@@ -231,6 +252,8 @@ func (e EventType) String() string {
 		return "IMAGE_PULL_PROGRESS"
 	case ImagePullCompleteEvent:
 		return "IMAGE_PULL_COMPLETE"
+	case ProgramStatusEventType:
+		return "PROGRAM_STATUS"
 	default:
 		return "UNKNOWN"
 	}
@@ -272,6 +295,27 @@ func (o *OutputData) Type() EventType {
 
 func (o *OutputData) String() string {
 	return fmt.Sprintf("OutputData{Size: %d bytes}", len(o.Data))
+}
+
+// ProgramStatus is a typed OSC 7501 program status report found in the child
+// output. It is yielded after the OutputData holding all preceding bytes and
+// before any following bytes. Timestamp is when the report was read.
+type ProgramStatus struct {
+	State    string // e.g. working, blocked, done
+	ID       string
+	Kind     string
+	App      string
+	Title    string // decoded
+	Msg      string // decoded
+	Progress int    // 0-100, or -1 if indeterminate
+}
+
+func (p *ProgramStatus) Type() EventType {
+	return ProgramStatusEventType
+}
+
+func (p *ProgramStatus) String() string {
+	return fmt.Sprintf("ProgramStatus{State: %s, ID: %s, Kind: %s, Progress: %d}", p.State, p.ID, p.Kind, p.Progress)
 }
 
 // ProcessStart represents the beginning of process execution
@@ -442,6 +486,10 @@ func IsContainerCreateEvent(event StreamEvent) bool {
 
 func IsContainerRemoveEvent(event StreamEvent) bool {
 	return event.Type() == ContainerRemoveEvent
+}
+
+func IsProgramStatusEvent(event StreamEvent) bool {
+	return event.Type() == ProgramStatusEventType
 }
 
 // Helper function to create Event with event and timestamp

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"iter"
 	"os"
 	"path/filepath"
@@ -16,6 +17,7 @@ import (
 	"github.com/moby/moby/api/pkg/stdcopy"
 	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/client"
+	"github.com/wolfeidau/console-stream/internal/osc7501"
 )
 
 // ContainerProcess represents a process running inside a container
@@ -35,6 +37,7 @@ type ContainerProcess struct {
 	flushInterval     time.Duration
 	heartbeatInterval time.Duration
 	maxBufferSize     int
+	programStatus     bool
 
 	// State
 	stats *ProcessStats
@@ -60,6 +63,7 @@ func NewContainerProcess(cmd string, args []string, opts ...ContainerProcessOpti
 		flushInterval:     cfg.flushInterval,
 		heartbeatInterval: cfg.heartbeatInterval,
 		maxBufferSize:     cfg.maxBufferSize,
+		programStatus:     cfg.programStatus,
 	}
 
 	// Initialize stats if meter provided (graceful degradation)
@@ -194,7 +198,11 @@ func (cp *ContainerProcess) ExecuteAndStream(ctx context.Context) iter.Seq2[Even
 				return
 			}
 			defer reader.Close()
-			if _, err := stdcopy.StdCopy(w, w, reader); err != nil && runCtx.Err() == nil {
+			var dst io.Writer = w
+			if cp.programStatus {
+				dst = &osc7501.Scanner{W: w, OnReport: w.addStatus}
+			}
+			if _, err := stdcopy.StdCopy(dst, dst, reader); err != nil && runCtx.Err() == nil {
 				logErr = err
 			}
 		}()

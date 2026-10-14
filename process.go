@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/creack/pty"
+	"github.com/wolfeidau/console-stream/internal/osc7501"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 )
@@ -89,6 +90,7 @@ type Process struct {
 	flushInterval     time.Duration
 	heartbeatInterval time.Duration
 	maxBufferSize     int
+	programStatus     bool
 
 	// Metrics and observability (optional)
 	stats *ProcessStats
@@ -117,6 +119,7 @@ func NewProcess(cmd string, args []string, opts ...ProcessOption) *Process {
 		flushInterval:     cfg.flushInterval,
 		heartbeatInterval: cfg.heartbeatInterval,
 		maxBufferSize:     cfg.maxBufferSize,
+		programStatus:     cfg.programStatus,
 	}
 
 	// Initialize stats if meter is provided
@@ -227,7 +230,11 @@ func (p *Process) run(ctx context.Context, yield func(Event, error) bool) {
 	readerDone := make(chan struct{})
 	go func() {
 		defer close(readerDone)
-		_, _ = io.Copy(w, out)
+		var dst io.Writer = w
+		if p.programStatus {
+			dst = &osc7501.Scanner{W: w, OnReport: w.addStatus}
+		}
+		_, _ = io.Copy(dst, out)
 	}()
 
 	// Reap the child promptly, then wait for the reader so output is complete.

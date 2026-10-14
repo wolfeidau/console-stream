@@ -65,7 +65,7 @@ Many programs emit OSC only when stdout is a TTY, so PTY mode sees the most traf
      - Callbacks: `OnReport(Report)`, `OnQuery()`. Each fires after all bytes up to and including the terminator have been written downstream.
 2. **`ProgramStatus` event** in `console.go`: `ProgramStatusEvent` / `"PROGRAM_STATUS"`, carrying the report fields with `Title`/`Msg` decoded. The event timestamp is the read time.
 3. **Wiring** behind `WithProgramStatus()`, in all modes:
-   - The scanner wraps the `BufferWriter`. On `OnReport` it calls `BufferWriter.AddStatus`, synchronously, after the preceding bytes were forwarded, so the status records its byte offset in the current batch.
+   - The scanner wraps the `BufferWriter`. On `OnReport` it calls `BufferWriter.addStatus` (unexported), synchronously, after the preceding bytes were forwarded, so the status records its byte offset in the current batch.
    - `streamOutput` splits the batch at the status offsets, yielding `OutputData` before each `ProgramStatus` in byte order. Adding a status signals a flush so it is delivered promptly.
    - A channel from the callback to the event loop is not used: the copy goroutine keeps writing, so a channel races with the buffered bytes and breaks ordering.
 4. **Lifetime**: console-stream keeps no terminal record store and emits no synthetic `idle` on exit. Consumers apply the lifetime rule themselves after `ProcessEnd`/`ProcessError`.

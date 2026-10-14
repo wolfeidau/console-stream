@@ -11,6 +11,7 @@ A Go library for executing processes and streaming their output in real-time usi
 - **Pluggable cancellation**: `Cancellor` interface; the default stops the whole process group (SIGTERM, then SIGKILL)
 - **Container mode**: Run commands in Docker/Podman containers with image pull progress
 - **Asciicast**: Convert PTY streams to asciicast v3
+- **Program status**: Opt-in `ProgramStatus` events from OSC 7501 reports, byte-ordered against `OutputData`
 - **Batching**: Configurable batch interval and size; timing is preserved per read
 - **Context support**: Full context cancellation with graceful cleanup
 
@@ -142,6 +143,7 @@ func WithEnvMap(m map[string]string) ProcessOption
 func WithWorkingDir(dir string) ProcessOption
 func WithFlushInterval(d time.Duration) ProcessOption // batch interval, default 1s
 func WithHeartbeatInterval(d time.Duration) ProcessOption // default 1s
+func WithProgramStatus() ProcessOption                // parse OSC 7501 reports (off by default)
 func WithMaxBufferSize(size int) ProcessOption        // default 10MB
 func WithMeter(meter metric.Meter) ProcessOption      // OpenTelemetry metrics
 ```
@@ -162,6 +164,7 @@ func WithContainerFlushInterval(interval time.Duration) ContainerProcessOption
 func WithContainerHeartbeatInterval(interval time.Duration) ContainerProcessOption
 func WithContainerMaxBufferSize(size int) ContainerProcessOption
 func WithContainerMeter(meter metric.Meter) ContainerProcessOption
+func WithContainerProgramStatus() ContainerProcessOption // parse OSC 7501 reports (off by default)
 ```
 
 There is no container Cancellor option: cancellation stops the container via the runtime.
@@ -192,6 +195,7 @@ const (
     ImagePullStartEvent
     ImagePullProgressEvent
     ImagePullCompleteEvent
+    ProgramStatusEventType
 )
 ```
 
@@ -205,8 +209,9 @@ const (
 | `TerminalResizeEvent` | `Rows, Cols, X, Y` | PTY |
 | `ContainerCreate` / `ContainerRemove` | `ContainerID, Image` / `ContainerID` | Container mode |
 | `ImagePullStart` / `ImagePullProgress` / `ImagePullComplete` | `Image` / `Image, Status, PercentComplete, BytesDownloaded, BytesTotal` / `Image, Digest` | Container mode |
+| `ProgramStatus` | `State, ID, Kind, App, Title, Msg string, Progress int` | OSC 7501 report; opt-in; `Progress` -1 = indeterminate |
 
-Helpers: `IsOutputEvent`, `IsHeartbeatEvent`, `IsProcessStartEvent`, `IsProcessEndEvent`, `IsProcessErrorEvent`, `IsProcessLifecycleEvent`, `IsTerminalResizeEvent`, `IsContainerCreateEvent`, `IsContainerRemoveEvent`.
+Helpers: `IsOutputEvent`, `IsHeartbeatEvent`, `IsProcessStartEvent`, `IsProcessEndEvent`, `IsProcessErrorEvent`, `IsProcessLifecycleEvent`, `IsTerminalResizeEvent`, `IsContainerCreateEvent`, `IsContainerRemoveEvent`, `IsProgramStatusEvent`.
 
 ### Cancellor
 
@@ -259,6 +264,37 @@ Runtime failures after start are reported as `ProcessError` events; non-zero exi
 5. **Not line-buffered**: Events may split mid-line; partial lines are delivered with the next batch. Consumers that need lines must reassemble them.
 6. **Segments**: Each `OutputData` carries `Segments` (offset and read time per write into the buffer); writes within 1ms are merged. Asciicast uses them for per-read timing.
 7. **Heartbeat**: heartbeats have their own interval (`WithHeartbeatInterval`, default 1s). On each heartbeat tick a `HeartbeatEvent` is emitted if no output was delivered or buffered since the previous tick, so the first follows one to two intervals of silence and then one per interval. Independent of the batch interval.
+
+### Program status (OSC 7501)
+
+Programs can report what they are doing (working, blocked, done) with OSC 7501 escape sequences ([spec](https://www.superlogical.com/rex/docs/build/program-status); local copy in `spec/osc7501-program-status.md`). Enable parsing with `WithProgramStatus()` (pipe and PTY) or `WithContainerProgramStatus()`. It is off by default.
+
+- Each report yields a `ProgramStatus` event (`State, ID, Kind, App, Title, Msg, Progress`; `Progress` is -1 when indeterminate; `Title` and `Msg` are decoded).
+- The report bytes still pass through unchanged in `OutputData`.
+- Ordering: `ProgramStatus` is yielded after the `OutputData` holding all preceding bytes and before any following bytes. It is delivered promptly, not at the next batch tick.
+- `Event.Timestamp` is the time the report was read.
+- Lifetime: after `ProcessEnd` or `ProcessError`, `working` and `blocked` no longer apply. The library emits no synthetic events and keeps no record store; track state in the consumer.
+- Only OSC framing is tracked; an `ESC ]` inside a DCS or APC string can be mis-framed.
+- Asciicast: a marker (`status: <state>[/<kind>][ <id>][ <progress>%][: <msg>]`) is written when `(id, state, kind)` changes for an ID. Progress-only and message-only changes write nothing, and the recording continues.
+
+```go
+process := consolestream.NewProcess("agent", nil,
+    consolestream.WithPTYMode(),
+    consolestream.WithProgramStatus())
+
+ctx, cancel := context.WithCancel(ctx)
+defer cancel()
+
+for event, err := range process.ExecuteAndStream(ctx) {
+    if err != nil {
+        break
+    }
+    if s, ok := event.Event.(*consolestream.ProgramStatus); ok && s.State == "blocked" {
+        fmt.Printf("blocked (%s): %s\n", s.Kind, s.Msg)
+        cancel()
+    }
+}
+```
 
 ### Process Lifecycle
 
