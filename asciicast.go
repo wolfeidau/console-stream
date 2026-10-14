@@ -84,6 +84,11 @@ func NewExitEvent(interval float64, exitCode int) AscicastV3Event {
 	return AscicastV3Event{interval, "x", strconv.Itoa(exitCode)}
 }
 
+// NewMarkerEvent creates an asciicast marker event
+func NewMarkerEvent(interval float64, label string) AscicastV3Event {
+	return AscicastV3Event{interval, "m", label}
+}
+
 // ToAscicastV3 transforms a stream of console-stream events into asciicast v3 format
 func ToAscicastV3(events iter.Seq2[Event, error], metadata AscicastV3Metadata) iter.Seq2[AscicastV3Line, error] {
 	return func(yield func(AscicastV3Line, error) bool) {
@@ -150,8 +155,24 @@ func ToAscicastV3(events iter.Seq2[Event, error], metadata AscicastV3Metadata) i
 				}
 				return // Exit event ends the session
 
+			case *ProcessError:
+				if len(carry) > 0 {
+					if !yield(NewOutputEvent(interval, string(carry)), nil) {
+						return
+					}
+					interval = 0
+				}
+				label := "error: " + e.Message
+				if e.Error != nil {
+					label += ": " + e.Error.Error()
+				}
+				if !yield(NewMarkerEvent(interval, label), nil) {
+					return
+				}
+				return // Marker ends the session; no exit code is available
+
 			// Filter out console-stream internal events
-			case *ProcessStart, *ProcessError, *HeartbeatEvent:
+			case *ProcessStart, *HeartbeatEvent:
 				// Skip these events as they don't map to asciicast format
 				continue
 
