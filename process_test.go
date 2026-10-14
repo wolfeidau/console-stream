@@ -130,37 +130,6 @@ func TestProcessExecuteAndStreamPTYMode(t *testing.T) {
 	require.True(t, hasOutput, "Should have output events")
 }
 
-func TestProcessWithPTYSize(t *testing.T) {
-	t.Parallel()
-
-	size := pty.Winsize{Rows: 24, Cols: 80}
-	process := NewProcess("bash", []string{"-c", "tput cols && tput lines"},
-		WithPTYMode(),
-		WithPTYSize(&size),
-		WithEnvVar("TERM", "xterm"))
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	var outputData []byte
-	for part, err := range process.ExecuteAndStream(ctx) {
-		require.NoError(t, err)
-
-		if part.EventType() == OutputEvent {
-			output := part.Event.(*OutputData)
-			outputData = append(outputData, output.Data...)
-		}
-
-		// Break when we see a process end
-		if part.EventType() == ProcessEndEvent {
-			break
-		}
-	}
-
-	outputStr := string(outputData)
-	require.Contains(t, outputStr, "80") // cols
-	require.Contains(t, outputStr, "24") // rows
-}
-
 func TestProcessPTYSizeApplied(t *testing.T) {
 	t.Parallel()
 
