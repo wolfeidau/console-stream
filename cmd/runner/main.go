@@ -321,20 +321,9 @@ func executeProcess(ctx context.Context, config *Config, format string, enableMe
 		logger.Debug("Metrics collection enabled with local storage")
 	}
 
-	if format == "asciicast" {
-		// For asciicast, use a smaller flush interval to capture more granular output
-		opts = append(opts, consolestream.WithFlushInterval(100*time.Millisecond))
-		logger.Debug("Using optimized flush interval for asciicast", "interval", "100ms")
-	}
-
-	logger.Debug("Process options configured",
-		"env_vars", len(config.Env),
-		"flush_interval", func() string {
-			if format == "asciicast" {
-				return "100ms"
-			}
-			return "default"
-		}())
+	// Asciicast timing comes from OutputData.Segments, so the default batch
+	// interval is fine for recordings.
+	logger.Debug("Process options configured", "env_vars", len(config.Env))
 
 	// Execute based on process type
 	switch config.ProcessType {

@@ -41,8 +41,8 @@ type processConfig struct {
 	workingDir    string
 	mode          ProcessMode   // PTY or Pipe mode
 	ptySize       *pty.Winsize  // Terminal size for PTY mode
-	flushInterval time.Duration // How often to flush buffers
-	maxBufferSize int           // Maximum buffer size before forced flush
+	flushInterval time.Duration // Output batch interval
+	maxBufferSize int           // Maximum batch size before early delivery
 	meter         metric.Meter  // OpenTelemetry meter
 }
 
@@ -127,14 +127,19 @@ func WithWorkingDir(dir string) ProcessOption {
 	}
 }
 
-// WithFlushInterval sets how often to flush output buffers
+// WithFlushInterval sets the output batch interval (default 1s): how often
+// buffered output is delivered as an OutputData event. It bounds live delivery
+// latency and event volume. It does not affect timing accuracy: each event's
+// Segments record when output was read. A HeartbeatEvent fires after two
+// consecutive intervals with no output, so this also sets heartbeat cadence.
 func WithFlushInterval(interval time.Duration) ProcessOption {
 	return func(cfg *processConfig) {
 		cfg.flushInterval = interval
 	}
 }
 
-// WithMaxBufferSize sets the maximum buffer size before forcing a flush
+// WithMaxBufferSize sets the maximum batch size (default 10MB): output is
+// delivered as soon as the buffer reaches it, without waiting for the interval.
 func WithMaxBufferSize(size int) ProcessOption {
 	return func(cfg *processConfig) {
 		cfg.maxBufferSize = size
@@ -586,14 +591,19 @@ func WithContainerWorkingDir(dir string) ContainerProcessOption {
 	}
 }
 
-// WithContainerFlushInterval sets how often to flush output buffers for container processes
+// WithContainerFlushInterval sets the output batch interval (default 1s): how often
+// buffered output is delivered as an OutputData event. It bounds live delivery
+// latency and event volume. It does not affect timing accuracy: each event's
+// Segments record when output was read. A HeartbeatEvent fires after two
+// consecutive intervals with no output, so this also sets heartbeat cadence.
 func WithContainerFlushInterval(interval time.Duration) ContainerProcessOption {
 	return func(cfg *containerProcessConfig) {
 		cfg.flushInterval = interval
 	}
 }
 
-// WithContainerMaxBufferSize sets the maximum buffer size before forcing a flush for container processes
+// WithContainerMaxBufferSize sets the maximum batch size (default 10MB): output is
+// delivered as soon as the buffer reaches it, without waiting for the interval.
 func WithContainerMaxBufferSize(size int) ContainerProcessOption {
 	return func(cfg *containerProcessConfig) {
 		cfg.maxBufferSize = size

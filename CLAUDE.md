@@ -4,14 +4,14 @@ A Go library for executing processes and streaming their output in real-time usi
 
 ## Features
 
-- **Real-time streaming**: Stream process output in 1-second intervals or when buffers reach 10MB
+- **Real-time streaming**: Output is delivered in batches every second (configurable) or when 10MB is buffered, with per-read timestamps
 - **Iterator interface**: Uses `iter.Seq2[Event, error]` for clean consumption
 - **Event-driven architecture**: Process lifecycle events, output data, and heartbeat monitoring
 - **PTY support**: Run processes in pseudo-terminals to capture interactive output, ANSI escape sequences, and progress bars
 - **Pluggable cancellation**: `Cancellor` interface; the default stops the whole process group (SIGTERM, then SIGKILL)
 - **Container mode**: Run commands in Docker/Podman containers with image pull progress
 - **Asciicast**: Convert PTY streams to asciicast v3
-- **Buffer management**: Automatic flushing with configurable size limits
+- **Batching**: Configurable batch interval and size; timing is preserved per read
 - **Context support**: Full context cancellation with graceful cleanup
 
 ## Usage
@@ -140,7 +140,7 @@ func WithEnv(env []string) ProcessOption              // "KEY=value" entries
 func WithEnvVar(key, value string) ProcessOption
 func WithEnvMap(m map[string]string) ProcessOption
 func WithWorkingDir(dir string) ProcessOption
-func WithFlushInterval(d time.Duration) ProcessOption // default 1s
+func WithFlushInterval(d time.Duration) ProcessOption // batch interval, default 1s
 func WithMaxBufferSize(size int) ProcessOption        // default 10MB
 func WithMeter(meter metric.Meter) ProcessOption      // OpenTelemetry metrics
 ```
@@ -230,7 +230,7 @@ func NewMarkerEvent(interval float64, label string) AscicastV3Event
 
 `ToAscicastV3` maps each event type to a line: output to `"o"`, `TerminalResizeEvent` to `"r"`, and process end to `"x"`. A `ProcessError` ends the recording with an `"m"` marker instead of an `"x"` exit event. The library does not emit resize events itself (PTY size is fixed by `WithPTYSize`); callers wrapping the event stream may inject them.
 
-Recordings use per-read timestamps from `OutputData.Segments`, so the flush interval only affects delivery latency, not playback timing. Always record with `WithPTYMode()`.
+Recordings use per-read timestamps from `OutputData.Segments`, so the batch interval (`WithFlushInterval`) does not affect playback timing; there is no need to lower it for recordings. Always record with `WithPTYMode()`.
 
 `timestamp` defaults to the recording start time (Unix seconds) when unset. `TermInfo` accepts optional `Type`, `Version` and `Theme` (`*TermTheme`); event intervals are rounded to microseconds.
 
@@ -250,19 +250,19 @@ Runtime failures after start are reported as `ProcessError` events; non-zero exi
 
 ### Streaming Rules
 
-1. **Time-based flushing**: Buffers flush every flush interval (default 1s) if they contain data
-2. **Size-based flushing**: Buffers flush immediately at the max buffer size (default 10MB)
-3. **Final flushing**: Remaining data is flushed when the process exits
+1. **Batch interval**: Buffered output is delivered as one `OutputData` per batch interval (`WithFlushInterval`, default 1s) if there is any. It bounds live latency and event volume; it does not affect timing accuracy (see Segments).
+2. **Batch size**: A batch is delivered immediately when the buffer reaches the max size (`WithMaxBufferSize`, default 10MB)
+3. **Final batch**: Remaining data is delivered when the process exits
 4. **Combined output**: In pipe mode stdout and stderr share one pipe, so relative order is preserved and they cannot be told apart. A single `OutputData` event type carries both.
-5. **Not line-buffered**: Events may split mid-line; partial lines stream on the flush interval. Consumers that need lines must reassemble them.
+5. **Not line-buffered**: Events may split mid-line; partial lines are delivered with the next batch. Consumers that need lines must reassemble them.
 6. **Segments**: Each `OutputData` carries `Segments` (offset and read time per write into the buffer); writes within 1ms are merged. Asciicast uses them for per-read timing.
-7. **Heartbeat**: a `HeartbeatEvent` is emitted on a tick when there was no output in the previous tick and none in the current one.
+7. **Heartbeat**: a `HeartbeatEvent` is emitted on a batch tick when there was no output in the previous tick and none in the current one, so the batch interval also sets heartbeat cadence (every interval after two silent ones).
 
 ### Process Lifecycle
 
 1. `ProcessStart` is yielded with the PID
-2. Output is read into a `BufferWriter`; `OutputData` and `HeartbeatEvent` are yielded on flush ticks or size triggers
-3. On exit, final output is flushed, then `ProcessEnd` (or `ProcessError` for non-exit failures)
+2. Output is read into a `BufferWriter`; `OutputData` and `HeartbeatEvent` are yielded on batch ticks or when the batch size is reached
+3. On exit, the final batch is delivered, then `ProcessEnd` (or `ProcessError` for non-exit failures)
 4. Breaking out of the range loop or cancelling ctx stops the child via the Cancellor (SIGTERM to the process group, SIGKILL after the timeout, which is honoured on ctx cancel too) and waits for all goroutines before the iterator returns. A reaped pid is never signalled.
 5. `ExecuteAndStream` keeps per-run state locally, so concurrent calls on one `Process` are safe.
 
