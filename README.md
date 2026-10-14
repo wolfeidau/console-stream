@@ -1,6 +1,6 @@
 # Console Stream
 
-A Go library for executing processes and streaming their output in real-time using Go 1.23+ iterators.
+A Go library for executing processes and streaming their output in real-time using Go iterators (Go 1.26+).
 
 ## Features
 
