@@ -141,6 +141,7 @@ func WithEnvVar(key, value string) ProcessOption
 func WithEnvMap(m map[string]string) ProcessOption
 func WithWorkingDir(dir string) ProcessOption
 func WithFlushInterval(d time.Duration) ProcessOption // batch interval, default 1s
+func WithHeartbeatInterval(d time.Duration) ProcessOption // default 1s
 func WithMaxBufferSize(size int) ProcessOption        // default 10MB
 func WithMeter(meter metric.Meter) ProcessOption      // OpenTelemetry metrics
 ```
@@ -158,6 +159,7 @@ func WithContainerEnv(env []string) ContainerProcessOption
 func WithContainerEnvMap(envMap map[string]string) ContainerProcessOption
 func WithContainerWorkingDir(dir string) ContainerProcessOption
 func WithContainerFlushInterval(interval time.Duration) ContainerProcessOption
+func WithContainerHeartbeatInterval(interval time.Duration) ContainerProcessOption
 func WithContainerMaxBufferSize(size int) ContainerProcessOption
 func WithContainerMeter(meter metric.Meter) ContainerProcessOption
 ```
@@ -256,12 +258,12 @@ Runtime failures after start are reported as `ProcessError` events; non-zero exi
 4. **Combined output**: In pipe mode stdout and stderr share one pipe, so relative order is preserved and they cannot be told apart. A single `OutputData` event type carries both.
 5. **Not line-buffered**: Events may split mid-line; partial lines are delivered with the next batch. Consumers that need lines must reassemble them.
 6. **Segments**: Each `OutputData` carries `Segments` (offset and read time per write into the buffer); writes within 1ms are merged. Asciicast uses them for per-read timing.
-7. **Heartbeat**: a `HeartbeatEvent` is emitted on a batch tick when there was no output in the previous tick and none in the current one, so the batch interval also sets heartbeat cadence (every interval after two silent ones).
+7. **Heartbeat**: heartbeats have their own interval (`WithHeartbeatInterval`, default 1s). On each heartbeat tick a `HeartbeatEvent` is emitted if no output was delivered or buffered since the previous tick, so the first follows one to two intervals of silence and then one per interval. Independent of the batch interval.
 
 ### Process Lifecycle
 
 1. `ProcessStart` is yielded with the PID
-2. Output is read into a `BufferWriter`; `OutputData` and `HeartbeatEvent` are yielded on batch ticks or when the batch size is reached
+2. Output is read into a `BufferWriter`; `OutputData` is yielded on batch ticks or when the batch size is reached; `HeartbeatEvent` on silent heartbeat ticks
 3. On exit, the final batch is delivered, then `ProcessEnd` (or `ProcessError` for non-exit failures)
 4. Breaking out of the range loop or cancelling ctx stops the child via the Cancellor (SIGTERM to the process group, SIGKILL after the timeout, which is honoured on ctx cancel too) and waits for all goroutines before the iterator returns. A reaped pid is never signalled.
 5. `ExecuteAndStream` keeps per-run state locally, so concurrent calls on one `Process` are safe.

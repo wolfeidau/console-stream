@@ -36,14 +36,15 @@ func (m ProcessMode) String() string {
 
 // processConfig holds configuration options for processes
 type processConfig struct {
-	cancellor     Cancellor
-	env           []string
-	workingDir    string
-	mode          ProcessMode   // PTY or Pipe mode
-	ptySize       *pty.Winsize  // Terminal size for PTY mode
-	flushInterval time.Duration // Output batch interval
-	maxBufferSize int           // Maximum batch size before early delivery
-	meter         metric.Meter  // OpenTelemetry meter
+	cancellor         Cancellor
+	env               []string
+	workingDir        string
+	mode              ProcessMode   // PTY or Pipe mode
+	ptySize           *pty.Winsize  // Terminal size for PTY mode
+	flushInterval     time.Duration // Output batch interval
+	heartbeatInterval time.Duration // Heartbeat check interval
+	maxBufferSize     int           // Maximum batch size before early delivery
+	meter             metric.Meter  // OpenTelemetry meter
 }
 
 // applyDefaults sets sensible defaults for the process configuration
@@ -53,6 +54,9 @@ func (cfg *processConfig) applyDefaults() {
 	}
 	if cfg.flushInterval == 0 {
 		cfg.flushInterval = time.Second // Default 1-second flush interval
+	}
+	if cfg.heartbeatInterval <= 0 {
+		cfg.heartbeatInterval = time.Second
 	}
 	if cfg.maxBufferSize == 0 {
 		cfg.maxBufferSize = 10 * 1024 * 1024 // Default 10MB buffer limit (matches PipeProcess)
@@ -65,11 +69,12 @@ type ContainerProcessOption func(*containerProcessConfig)
 // containerProcessConfig holds configuration options for container processes
 type containerProcessConfig struct {
 	// Shared options
-	env           []string
-	workingDir    string
-	flushInterval time.Duration
-	maxBufferSize int
-	meter         metric.Meter
+	env               []string
+	workingDir        string
+	flushInterval     time.Duration
+	heartbeatInterval time.Duration
+	maxBufferSize     int
+	meter             metric.Meter
 
 	// Container-specific options
 	image   string
@@ -84,6 +89,9 @@ func (cfg *containerProcessConfig) applyDefaults() {
 	}
 	if cfg.flushInterval == 0 {
 		cfg.flushInterval = time.Second // Default 1-second flush interval
+	}
+	if cfg.heartbeatInterval <= 0 {
+		cfg.heartbeatInterval = time.Second
 	}
 	if cfg.maxBufferSize == 0 {
 		cfg.maxBufferSize = 10 * 1024 * 1024 // Default 10MB buffer limit (matches PipeProcess)
@@ -130,11 +138,20 @@ func WithWorkingDir(dir string) ProcessOption {
 // WithFlushInterval sets the output batch interval (default 1s): how often
 // buffered output is delivered as an OutputData event. It bounds live delivery
 // latency and event volume. It does not affect timing accuracy: each event's
-// Segments record when output was read. A HeartbeatEvent fires after two
-// consecutive intervals with no output, so this also sets heartbeat cadence.
+// Segments record when output was read.
 func WithFlushInterval(interval time.Duration) ProcessOption {
 	return func(cfg *processConfig) {
 		cfg.flushInterval = interval
+	}
+}
+
+// WithHeartbeatInterval sets the heartbeat interval (default 1s). On each
+// interval tick, a HeartbeatEvent is emitted if no output was delivered or
+// buffered since the previous tick, so the first heartbeat follows one to two
+// intervals of silence and repeats every interval. Independent of the batch interval.
+func WithHeartbeatInterval(interval time.Duration) ProcessOption {
+	return func(cfg *processConfig) {
+		cfg.heartbeatInterval = interval
 	}
 }
 
@@ -594,11 +611,20 @@ func WithContainerWorkingDir(dir string) ContainerProcessOption {
 // WithContainerFlushInterval sets the output batch interval (default 1s): how often
 // buffered output is delivered as an OutputData event. It bounds live delivery
 // latency and event volume. It does not affect timing accuracy: each event's
-// Segments record when output was read. A HeartbeatEvent fires after two
-// consecutive intervals with no output, so this also sets heartbeat cadence.
+// Segments record when output was read.
 func WithContainerFlushInterval(interval time.Duration) ContainerProcessOption {
 	return func(cfg *containerProcessConfig) {
 		cfg.flushInterval = interval
+	}
+}
+
+// WithContainerHeartbeatInterval sets the heartbeat interval (default 1s). On each
+// interval tick, a HeartbeatEvent is emitted if no output was delivered or
+// buffered since the previous tick, so the first heartbeat follows one to two
+// intervals of silence and repeats every interval. Independent of the batch interval.
+func WithContainerHeartbeatInterval(interval time.Duration) ContainerProcessOption {
+	return func(cfg *containerProcessConfig) {
+		cfg.heartbeatInterval = interval
 	}
 }
 
