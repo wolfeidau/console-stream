@@ -780,3 +780,67 @@ func TestToAscicastV3Segments(t *testing.T) {
 		require.InDelta(t, 0.2, iv, 1e-9)
 	})
 }
+
+func TestToAscicastV3ProgramStatusMarkers(t *testing.T) {
+	t.Parallel()
+
+	t0 := time.Date(2024, 1, 1, 12, 0, 0, 0, time.UTC)
+	events := []Event{
+		{Timestamp: t0, Event: &ProcessStart{PID: 1}},
+		{Timestamp: t0.Add(1 * time.Second), Event: &ProgramStatus{State: "working", ID: "build", Progress: -1}},
+		{Timestamp: t0.Add(2 * time.Second), Event: &OutputData{Data: []byte("out")}},
+		{Timestamp: t0.Add(3 * time.Second), Event: &ProgramStatus{State: "working", ID: "build", Progress: 50}},
+		{Timestamp: t0.Add(4 * time.Second), Event: &ProgramStatus{State: "blocked", ID: "build", Kind: "question", Progress: -1, Msg: "ok?"}},
+		{Timestamp: t0.Add(5 * time.Second), Event: &ProgramStatus{State: "done", ID: "build", Progress: 100}},
+		{Timestamp: t0.Add(6 * time.Second), Event: &OutputData{Data: []byte("late")}},
+		{Timestamp: t0.Add(7 * time.Second), Event: &ProcessEnd{ExitCode: 0, Success: true}},
+	}
+
+	lines := collectAscicastLines(ToAscicastV3(eventSeq(events), AscicastV3Metadata{}))
+	require.Len(t, lines, 7) // header, marker, o, marker, marker, o, x
+
+	var got [][3]any
+	for _, l := range lines[1:] {
+		d, err := l.MarshalJSON()
+		require.NoError(t, err)
+		var ev [3]any
+		require.NoError(t, json.Unmarshal(d, &ev))
+		got = append(got, ev)
+	}
+
+	require.Equal(t, [][3]any{
+		{1.0, "m", "status: working build"},
+		{1.0, "o", "out"},
+		{2.0, "m", "status: blocked/question build: ok?"},
+		{1.0, "m", "status: done build 100%"},
+		{1.0, "o", "late"},
+		{1.0, "x", "0"},
+	}, got)
+}
+
+func TestToAscicastV3ProgramStatusBeforeFlushTime(t *testing.T) {
+	t.Parallel()
+
+	// A status read before the preceding OutputData's flush time must not
+	// produce a negative interval or move the cursor backwards.
+	t0 := time.Date(2024, 1, 1, 12, 0, 0, 0, time.UTC)
+	events := []Event{
+		{Timestamp: t0, Event: &ProcessStart{PID: 1}},
+		{Timestamp: t0.Add(2 * time.Second), Event: &OutputData{Data: []byte("out")}},
+		{Timestamp: t0.Add(1500 * time.Millisecond), Event: &ProgramStatus{State: "working", Progress: -1}},
+		{Timestamp: t0.Add(3 * time.Second), Event: &OutputData{Data: []byte("more")}},
+	}
+
+	lines := collectAscicastLines(ToAscicastV3(eventSeq(events), AscicastV3Metadata{}))
+	require.Len(t, lines, 4) // header, o, m, o
+
+	var intervals []any
+	for _, l := range lines[1:] {
+		d, err := l.MarshalJSON()
+		require.NoError(t, err)
+		var ev [3]any
+		require.NoError(t, json.Unmarshal(d, &ev))
+		intervals = append(intervals, ev[0])
+	}
+	require.Equal(t, []any{2.0, 0.0, 1.0}, intervals)
+}

@@ -37,14 +37,48 @@ func streamOutput(
 	// active records output delivered since the previous heartbeat tick.
 	var active bool
 
-	emit := func(data []byte, segs []OutputSegment) bool {
-		if !yield(newEvent(&OutputData{Data: data, Segments: segs}), nil) {
-			return false
+	// deliver yields a batch in byte order: output before each status, the
+	// status, then the remaining output. ts stamps OutputData; zero means now.
+	deliver := func(data []byte, segs []OutputSegment, statuses []pendingStatus, ts time.Time) bool {
+		out := func(d []byte, sg []OutputSegment) bool {
+			t := ts
+			if t.IsZero() {
+				t = time.Now()
+			}
+			if !yield(Event{Timestamp: t, Event: &OutputData{Data: d, Segments: sg}}, nil) {
+				return false
+			}
+			if stats != nil {
+				stats.RecordOutput(ctx, int64(len(d)))
+			}
+			active = true
+			return true
 		}
-		if stats != nil {
-			stats.RecordOutput(ctx, int64(len(data)))
+		prev := 0
+		for _, st := range statuses {
+			off := min(max(st.Offset, prev), len(data))
+			if off > prev && !out(data[prev:off], sliceSegments(segs, prev, off)) {
+				return false
+			}
+			prev = off
+			r := st.Report
+			if !yield(Event{Timestamp: st.Time, Event: &ProgramStatus{
+				State: r.State, ID: r.ID, Kind: r.Kind, App: r.App,
+				Title: r.Title, Msg: r.Msg, Progress: r.Progress,
+			}}, nil) {
+				return false
+			}
+			if stats != nil {
+				stats.RecordEvent(ctx, "program_status")
+			}
+			active = true
 		}
-		active = true
+		if prev < len(data) {
+			if len(statuses) == 0 {
+				return out(data, segs)
+			}
+			return out(data[prev:], sliceSegments(segs, prev, len(data)))
+		}
 		return true
 	}
 
@@ -54,8 +88,8 @@ func streamOutput(
 			return time.Time{}, false, nil
 
 		case <-ticker.C:
-			if data, segs := w.FlushSegments(); data != nil {
-				if !emit(data, segs) {
+			if data, segs, sts := w.flushBatch(); data != nil || sts != nil {
+				if !deliver(data, segs, sts, time.Time{}) {
 					return time.Time{}, false, nil
 				}
 			}
@@ -73,9 +107,9 @@ func streamOutput(
 			active = false
 
 		case <-flush:
-			if w.Len() >= maxBuf {
-				if data, segs := w.FlushSegments(); data != nil {
-					if !emit(data, segs) {
+			if w.Len() >= maxBuf || w.hasStatus() {
+				if data, segs, sts := w.flushBatch(); data != nil || sts != nil {
+					if !deliver(data, segs, sts, time.Time{}) {
 						return time.Time{}, false, nil
 					}
 				}
@@ -83,17 +117,38 @@ func streamOutput(
 
 		case err := <-done:
 			endTime := time.Now()
-			if data, segs := w.FlushSegments(); data != nil {
-				if !yield(Event{Timestamp: endTime, Event: &OutputData{Data: data, Segments: segs}}, nil) {
+			if data, segs, sts := w.flushBatch(); data != nil || sts != nil {
+				if !deliver(data, segs, sts, endTime) {
 					return time.Time{}, false, nil
-				}
-				if stats != nil {
-					stats.RecordOutput(ctx, int64(len(data)))
 				}
 			}
 			return endTime, true, err
 		}
 	}
+}
+
+// sliceSegments returns the segments covering data[from:to], rebased to start
+// at from. The segment in effect at from (the last with Offset <= from) is
+// included with Offset 0 and its original Time.
+func sliceSegments(segs []OutputSegment, from, to int) []OutputSegment {
+	if len(segs) == 0 {
+		return nil
+	}
+	first := 0
+	for i, sg := range segs {
+		if sg.Offset <= from {
+			first = i
+		}
+	}
+	var out []OutputSegment
+	for i := first; i < len(segs); i++ {
+		sg := segs[i]
+		if i > first && sg.Offset >= to {
+			break
+		}
+		out = append(out, OutputSegment{Offset: max(sg.Offset-from, 0), Time: sg.Time})
+	}
+	return out
 }
 
 // exitCodeOf returns the exit code, using the shell convention 128+signal for

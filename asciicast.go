@@ -112,6 +112,9 @@ func ToAscicastV3(events iter.Seq2[Event, error], metadata AscicastV3Metadata) i
 		// carry holds a trailing incomplete UTF-8 sequence until the next output event.
 		var carry []byte
 
+		// marked holds the last marked (state, kind) per status ID.
+		marked := map[string][2]string{}
+
 		for event, err := range events {
 			if err != nil {
 				if !yield(nil, err) {
@@ -173,6 +176,22 @@ func ToAscicastV3(events iter.Seq2[Event, error], metadata AscicastV3Metadata) i
 					return
 				}
 
+			case *ProgramStatus:
+				key := [2]string{e.State, e.Kind}
+				if last, ok := marked[e.ID]; ok && last == key {
+					continue
+				}
+				marked[e.ID] = key
+				// Status timestamps are read times and can precede the flush time
+				// of the previous OutputData; never step the cursor backwards.
+				interval = max(interval, 0)
+				if event.Timestamp.After(lastEventTime) {
+					lastEventTime = event.Timestamp
+				}
+				if !yield(NewMarkerEvent(interval, programStatusLabel(e)), nil) {
+					return
+				}
+
 			case *ProcessEnd:
 				if len(carry) > 0 {
 					if !yield(NewOutputEvent(interval, string(carry)), nil) {
@@ -217,6 +236,25 @@ func ToAscicastV3(events iter.Seq2[Event, error], metadata AscicastV3Metadata) i
 			yield(NewOutputEvent(0, string(carry)), nil)
 		}
 	}
+}
+
+// programStatusLabel formats a marker label:
+// status: <state>[/<kind>][ <id>][ <progress>%][: <msg>]
+func programStatusLabel(e *ProgramStatus) string {
+	label := "status: " + e.State
+	if e.Kind != "" {
+		label += "/" + e.Kind
+	}
+	if e.ID != "" {
+		label += " " + e.ID
+	}
+	if e.Progress >= 0 {
+		label += " " + strconv.Itoa(e.Progress) + "%"
+	}
+	if e.Msg != "" {
+		label += ": " + e.Msg
+	}
+	return label
 }
 
 // splitIncompleteUTF8 splits b into a complete part and a trailing incomplete

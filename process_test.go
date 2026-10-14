@@ -423,3 +423,101 @@ func TestProcessHeartbeatInterval(t *testing.T) {
 		require.Equal(t, 0, countHeartbeats(t, p))
 	})
 }
+
+const statusScript = `printf 'a\033]7501;state=working:progress=60:msg=aGk=\033\\b'`
+
+const statusStream = "a\x1b]7501;state=working:progress=60:msg=aGk=\x1b\\b"
+
+func collectEvents(t *testing.T, p *Process) []Event {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	var events []Event
+	for event, err := range p.ExecuteAndStream(ctx) {
+		require.NoError(t, err)
+		events = append(events, event)
+	}
+	return events
+}
+
+func TestProcessProgramStatusOrdering(t *testing.T) {
+	t.Parallel()
+
+	for name, mode := range map[string]ProcessOption{"pipe": WithPipeMode(), "pty": WithPTYMode()} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			p := NewProcess("bash", []string{"-c", statusScript}, mode, WithProgramStatus())
+			events := collectEvents(t, p)
+
+			var all, before, after []byte
+			statuses := 0
+			for _, e := range events {
+				switch ev := e.Event.(type) {
+				case *OutputData:
+					all = append(all, ev.Data...)
+					if statuses == 0 {
+						before = append(before, ev.Data...)
+					} else {
+						after = append(after, ev.Data...)
+					}
+				case *ProgramStatus:
+					statuses++
+					require.Equal(t, "working", ev.State)
+					require.Equal(t, 60, ev.Progress)
+					require.Equal(t, "hi", ev.Msg)
+				}
+			}
+			require.Equal(t, 1, statuses)
+			require.Equal(t, statusStream, string(all))
+			require.Equal(t, "a\x1b]7501;state=working:progress=60:msg=aGk=\x1b\\", string(before))
+			require.Equal(t, "b", string(after))
+		})
+	}
+}
+
+func TestProcessProgramStatusPrompt(t *testing.T) {
+	t.Parallel()
+
+	for name, mode := range map[string]ProcessOption{"pipe": WithPipeMode(), "pty": WithPTYMode()} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			script := `printf '\033]7501;state=blocked:kind=permission\033\\'; sleep 3`
+			p := NewProcess("bash", []string{"-c", script}, mode, WithProgramStatus())
+
+			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
+
+			var startedAt time.Time
+			for event, err := range p.ExecuteAndStream(ctx) {
+				require.NoError(t, err)
+				switch ev := event.Event.(type) {
+				case *ProcessStart:
+					startedAt = time.Now()
+				case *ProgramStatus:
+					require.Equal(t, "blocked", ev.State)
+					require.Equal(t, "permission", ev.Kind)
+					require.Equal(t, -1, ev.Progress)
+					require.Less(t, time.Since(startedAt), 500*time.Millisecond)
+					return
+				}
+			}
+			require.Fail(t, "no ProgramStatus received")
+		})
+	}
+}
+
+func TestProcessProgramStatusOffByDefault(t *testing.T) {
+	t.Parallel()
+
+	p := NewProcess("bash", []string{"-c", statusScript})
+	var all []byte
+	for _, e := range collectEvents(t, p) {
+		require.False(t, IsProgramStatusEvent(e.Event))
+		if o, ok := e.Event.(*OutputData); ok {
+			all = append(all, o.Data...)
+		}
+	}
+	require.Equal(t, statusStream, string(all))
+}

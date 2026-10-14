@@ -552,3 +552,43 @@ done:
 	require.Contains(t, output, "pulled successfully")
 	require.GreaterOrEqual(t, len(events), 3, "Should have at least ContainerCreate, ProcessStart, ProcessEnd")
 }
+
+func TestContainerProcessProgramStatus(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping container test in short mode (requires Docker)")
+	}
+
+	requireDocker(t)
+
+	t.Parallel()
+
+	process := NewContainerProcess("printf", []string{`a\033]7501;state=working:progress=60:msg=aGk=\033\\b`},
+		WithContainerImage("alpine:latest"),
+		WithContainerProgramStatus())
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	var before, after []byte
+	var statuses []*ProgramStatus
+	for event, err := range process.ExecuteAndStream(ctx) {
+		require.NoError(t, err)
+		switch e := event.Event.(type) {
+		case *OutputData:
+			if len(statuses) == 0 {
+				before = append(before, e.Data...)
+			} else {
+				after = append(after, e.Data...)
+			}
+		case *ProgramStatus:
+			statuses = append(statuses, e)
+		}
+	}
+
+	require.Len(t, statuses, 1)
+	require.Equal(t, "working", statuses[0].State)
+	require.Equal(t, 60, statuses[0].Progress)
+	require.Equal(t, "hi", statuses[0].Msg)
+	require.Equal(t, "a\x1b]7501;state=working:progress=60:msg=aGk=\x1b\\", string(before))
+	require.Equal(t, "b", string(after))
+}

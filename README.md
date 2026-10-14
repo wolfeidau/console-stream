@@ -10,6 +10,7 @@ A Go library for executing processes and streaming their output in real-time usi
 - **Event-driven**: Process lifecycle events, output data, and heartbeat monitoring
 - **Production ready**: Context cancellation, process-group cleanup, error handling, and OpenTelemetry metrics
 - **Asciicast**: Record PTY sessions in asciicast v3 format
+- **Program status**: Typed `ProgramStatus` events from OSC 7501 reports, ordered against output (opt-in)
 
 ## Quick Start
 
@@ -79,6 +80,7 @@ process := consolestream.NewProcess("npm", []string{"install"},
 | `WithHeartbeatInterval(d)` | Heartbeat interval (default 1s), independent of the batch interval |
 | `WithMaxBufferSize(n)` | Deliver a batch early when it reaches n bytes (default 10MB) |
 | `WithMeter(metric.Meter)` | OpenTelemetry metrics |
+| `WithProgramStatus()` | Parse OSC 7501 reports into `ProgramStatus` events (off by default) |
 
 ## Container Execution
 
@@ -127,6 +129,38 @@ Event order: `ContainerCreate → ProcessStart → OutputData/HeartbeatEvent →
 | `WithContainerHeartbeatInterval(d)` | Heartbeat interval (default 1s) |
 | `WithContainerMaxBufferSize(n)` | Maximum batch size (default 10MB) |
 | `WithContainerMeter(metric.Meter)` | OpenTelemetry metrics |
+| `WithContainerProgramStatus()` | Parse OSC 7501 reports into `ProgramStatus` events (off by default) |
+
+## Program status (OSC 7501)
+
+Programs can report what they are doing (working, blocked, done) with OSC 7501 escape sequences ([spec](https://www.superlogical.com/rex/docs/build/program-status); local copy in `spec/osc7501-program-status.md`). Enable parsing with `WithProgramStatus()` (pipe and PTY) or `WithContainerProgramStatus()`. It is off by default.
+
+- Each report yields a `ProgramStatus` event (`State, ID, Kind, App, Title, Msg, Progress`; `Progress` is -1 when indeterminate; `Title` and `Msg` are decoded).
+- The report bytes still pass through unchanged in `OutputData`.
+- Ordering: `ProgramStatus` is yielded after the `OutputData` holding all preceding bytes and before any following bytes. It is delivered promptly, not at the next batch tick.
+- `Event.Timestamp` is the time the report was read.
+- Lifetime: after `ProcessEnd` or `ProcessError`, `working` and `blocked` no longer apply. The library emits no synthetic events and keeps no record store; track state in the consumer.
+- Only OSC framing is tracked; an `ESC ]` inside a DCS or APC string can be mis-framed.
+- Asciicast: a marker (`status: <state>[/<kind>][ <id>][ <progress>%][: <msg>]`) is written when `(id, state, kind)` changes for an ID. Progress-only and message-only changes write nothing, and the recording continues.
+
+```go
+process := consolestream.NewProcess("agent", nil,
+    consolestream.WithPTYMode(),
+    consolestream.WithProgramStatus())
+
+ctx, cancel := context.WithCancel(ctx)
+defer cancel()
+
+for event, err := range process.ExecuteAndStream(ctx) {
+    if err != nil {
+        break
+    }
+    if s, ok := event.Event.(*consolestream.ProgramStatus); ok && s.State == "blocked" {
+        fmt.Printf("blocked (%s): %s\n", s.Kind, s.Msg)
+        cancel()
+    }
+}
+```
 
 ## Asciicast Recording
 
@@ -173,6 +207,7 @@ Recordings use per-read timestamps from `OutputData.Segments`, so the batch inte
 | `TerminalResizeEvent` | Terminal size change (PTY) |
 | `ContainerCreate` / `ContainerRemove` | Container created / cleaned up |
 | `ImagePullStart` / `ImagePullProgress` / `ImagePullComplete` | Image pull (container) |
+| `ProgramStatus` | OSC 7501 report (state, id, kind, app, title, msg, progress); requires `WithProgramStatus()` |
 
 ## Streaming Behaviour
 
