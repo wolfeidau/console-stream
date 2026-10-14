@@ -65,7 +65,6 @@ type ContainerProcessOption func(*containerProcessConfig)
 // containerProcessConfig holds configuration options for container processes
 type containerProcessConfig struct {
 	// Shared options
-	cancellor     Cancellor
 	env           []string
 	workingDir    string
 	flushInterval time.Duration
@@ -80,9 +79,6 @@ type containerProcessConfig struct {
 
 // applyDefaults sets sensible defaults for the container process configuration
 func (cfg *containerProcessConfig) applyDefaults() {
-	if cfg.cancellor == nil {
-		cfg.cancellor = NewLocalCancellor(5 * time.Second)
-	}
 	if cfg.runtime == "" {
 		cfg.runtime = "docker" // Default to Docker
 	}
@@ -577,13 +573,6 @@ func WithContainerEnvMap(envMap map[string]string) ContainerProcessOption {
 func WithContainerWorkingDir(dir string) ContainerProcessOption {
 	return func(cfg *containerProcessConfig) {
 		cfg.workingDir = dir
-	}
-}
-
-// WithContainerCancellor sets a custom cancellor for the container process
-func WithContainerCancellor(cancellor Cancellor) ContainerProcessOption {
-	return func(cfg *containerProcessConfig) {
-		cfg.cancellor = cancellor
 	}
 }
 
