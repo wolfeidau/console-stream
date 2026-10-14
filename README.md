@@ -1,6 +1,6 @@
 # Console Stream
 
-A Go library for executing processes and streaming their output in real-time using Go 1.23+ iterators.
+A Go library for executing processes and streaming their output in real-time using Go iterators (Go 1.26+).
 
 ## Features
 
@@ -8,9 +8,12 @@ A Go library for executing processes and streaming their output in real-time usi
 - **Unified API**: Single process type supports both pipe and PTY modes
 - **Container execution**: Run processes inside Docker/Podman containers with volume mounts
 - **Event-driven**: Process lifecycle events, output data, and heartbeat monitoring
-- **Production ready**: Context cancellation, error handling, and resource cleanup
+- **Production ready**: Context cancellation, process-group cleanup, error handling, and OpenTelemetry metrics
+- **Asciicast**: Record PTY sessions in asciicast v3 format
 
 ## Quick Start
+
+Run a command and print its output as it arrives:
 
 ```go
 package main
@@ -18,15 +21,20 @@ package main
 import (
     "context"
     "fmt"
+    "os"
+    "os/signal"
+    "syscall"
 
     consolestream "github.com/wolfeidau/console-stream"
 )
 
 func main() {
-    // Create and execute process
+    // Children do not receive Ctrl-C; cancel the context on SIGINT/SIGTERM.
+    ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+    defer stop()
+
     process := consolestream.NewProcess("echo", []string{"Hello, World!"})
 
-    ctx := context.Background()
     for event, err := range process.ExecuteAndStream(ctx) {
         if err != nil {
             fmt.Printf("Error: %v\n", err)
@@ -35,31 +43,24 @@ func main() {
 
         switch e := event.Event.(type) {
         case *consolestream.OutputData:
-            fmt.Printf("Output: %s", string(e.Data))
+            fmt.Printf("Output: %s", e.Data)
+        case *consolestream.ProcessError:
+            fmt.Printf("Process error: %s\n", e.Message)
         case *consolestream.ProcessEnd:
             fmt.Printf("Process completed (Exit: %d)\n", e.ExitCode)
-            return
         }
     }
 }
 ```
 
-## API
+## PTY Mode
 
-### Process Creation
+Use a pseudo-terminal for interactive programs, colors and progress bars. ANSI escape sequences are preserved.
 
 ```go
-// Default (pipe mode)
-process := consolestream.NewProcess("command", []string{"arg1", "arg2"})
-
-// PTY mode for interactive programs
-process := consolestream.NewProcess("bash", []string{"-l"},
-    consolestream.WithPTYMode())
-
-// With configuration options
 process := consolestream.NewProcess("npm", []string{"install"},
     consolestream.WithPTYMode(),
-    consolestream.WithPTYSize(&pty.Winsize{Rows: 24, Cols: 80}),
+    consolestream.WithPTYSize(&pty.Winsize{Rows: 24, Cols: 80}), // github.com/creack/pty
     consolestream.WithEnvVar("NODE_ENV", "production"),
     consolestream.WithFlushInterval(500*time.Millisecond))
 ```
@@ -68,36 +69,27 @@ process := consolestream.NewProcess("npm", []string{"install"},
 
 | Option | Description |
 |--------|-------------|
-| `WithPipeMode()` | Use standard pipes (default) |
-| `WithPTYMode()` | Use pseudo-terminal for interactive programs |
-| `WithPTYSize(size)` | Set terminal dimensions for PTY |
-| `WithCancellor(c)` | Custom process cancellation |
-| `WithEnvVar(k, v)` | Set environment variable |
-| `WithFlushInterval(d)` | Output flush frequency |
-| `WithMaxBufferSize(s)` | Buffer size limit |
+| `WithPipeMode()` | Use a pipe for stdout+stderr (default) |
+| `WithPTYMode()` | Use a pseudo-terminal |
+| `WithPTYSize(*pty.Winsize)` | Terminal dimensions for PTY |
+| `WithCancellor(c)` | Custom cancellation (default: `NewLocalCancellor(5s)`) |
+| `WithEnv([]string)` / `WithEnvVar(k, v)` / `WithEnvMap(m)` | Environment variables |
+| `WithWorkingDir(dir)` | Working directory |
+| `WithFlushInterval(d)` | Output flush interval (default 1s) |
+| `WithMaxBufferSize(n)` | Flush when buffer reaches n bytes (default 10MB) |
+| `WithMeter(metric.Meter)` | OpenTelemetry metrics |
 
-### Container Execution
+## Container Execution
 
-Execute processes inside Docker/Podman containers with volume mounts and environment variables.
-
-**Automatic Image Pulling**: Container images are automatically pulled if not available locally, with progress events emitted every 2 seconds.
+Run a command inside a Docker or Podman container. Missing images are pulled automatically, with progress events every 2 seconds.
 
 ```go
-// Simple container execution
-process := consolestream.NewContainerProcess("go", []string{"version"},
-    consolestream.WithContainerImage("golang:1.25"))
-
-// With volume mounts
 process := consolestream.NewContainerProcess("make", []string{"test"},
     consolestream.WithContainerImage("golang:1.25"),
     consolestream.WithContainerMount("/path/to/code", "/workspace", false),
     consolestream.WithContainerWorkingDir("/workspace"),
-    consolestream.WithContainerEnvMap(map[string]string{
-        "CI": "true",
-        "GOPATH": "/go",
-    }))
+    consolestream.WithContainerEnvMap(map[string]string{"CI": "true"}))
 
-// Same event streaming model
 for event, err := range process.ExecuteAndStream(ctx) {
     if err != nil {
         break
@@ -121,77 +113,85 @@ for event, err := range process.ExecuteAndStream(ctx) {
 }
 ```
 
-### Container Options
+Event order: `ContainerCreate → ProcessStart → OutputData/HeartbeatEvent → ProcessEnd | ProcessError → ContainerRemove`, preceded by `ImagePull*` events when the image is missing.
 
 | Option | Description |
 |--------|-------------|
 | `WithContainerImage(img)` | Container image (required) |
-| `WithContainerRuntime(r)` | Runtime: "docker" (default) or "podman" |
-| `WithContainerMount(src, dst, ro)` | Volume mount (source, target, read-only) |
+| `WithContainerRuntime(r)` | `"docker"` (default) or `"podman"` |
+| `WithContainerMount(src, dst, ro)` | Volume mount |
 | `WithContainerWorkingDir(d)` | Working directory in container |
-| `WithContainerEnvMap(m)` | Environment variables map |
-| `WithContainerFlushInterval(d)` | Output flush frequency |
-| `WithContainerMaxBufferSize(s)` | Buffer size limit |
-
-### Event Types
-
-| Event | Description |
-|-------|-------------|
-| `ProcessStart` | Process started with PID |
-| `OutputData` | Process output (combined stdout/stderr) |
-| `ProcessEnd` | Process completed with exit code |
-| `ProcessError` | Process execution error |
-| `HeartbeatEvent` | Keep-alive when process is silent |
-| `TerminalResizeEvent` | Terminal size change (PTY only) |
-| `ContainerCreate` | Container created with ID and image |
-| `ContainerRemove` | Container cleanup completed |
-| `ImagePullStart` | Container image pull started |
-| `ImagePullProgress` | Container image pull progress (every 2s) |
-| `ImagePullComplete` | Container image pull completed |
-
-## Use Cases
-
-**Pipe Mode** - Use for:
-- Build tools, tests, data processing
-- Simple command execution
-- When you need performance
-
-**PTY Mode** - Use for:
-- Interactive applications (shells, editors)
-- Programs with progress bars or colors
-- Terminal session recording
-
-**Container Mode** - Use for:
-- CI/CD pipelines with isolated builds
-- Running processes in reproducible environments
-- Sandboxed execution with resource limits
-- Testing with specific runtime versions
+| `WithContainerEnv([]string)` / `WithContainerEnvMap(m)` | Environment variables |
+| `WithContainerFlushInterval(d)` | Output flush interval |
+| `WithContainerMaxBufferSize(n)` | Buffer size limit |
+| `WithContainerMeter(metric.Meter)` | OpenTelemetry metrics |
 
 ## Asciicast Recording
 
-Record terminal sessions in asciicast v3 format:
+Record a PTY session in asciicast v3 format:
 
 ```go
-// Record PTY session
-process := consolestream.NewProcess("bash", []string{"-l"},
+process := consolestream.NewProcess("bash", []string{"-c", "ls --color"},
     consolestream.WithPTYMode())
 
 metadata := consolestream.AscicastV3Metadata{
-    Term: consolestream.TermInfo{Cols: 80, Rows: 24},
-    Command: "bash -l",
+    Term:    consolestream.TermInfo{Cols: 80, Rows: 24},
+    Command: "ls --color",
 }
 
-events := process.ExecuteAndStream(ctx)
-asciicast := consolestream.ToAscicastV3(events, metadata)
-
-// Write to file
-file, _ := os.Create("session.cast")
+file, err := os.Create("session.cast")
+if err != nil {
+    log.Fatal(err)
+}
 defer file.Close()
 
-for line, err := range asciicast {
-    if err != nil { break }
-    data, _ := json.Marshal(line)
-    file.Write(append(data, '\n'))
+err = consolestream.WriteAscicastV3(process.ExecuteAndStream(ctx), metadata, func(b []byte) error {
+    _, err := file.Write(b)
+    return err
+})
+```
+
+`ToAscicastV3` returns the lines as an iterator if you need to process them yourself.
+
+## Events
+
+| Event | Description |
+|-------|-------------|
+| `ProcessStart` | Process started (PID, command, args) |
+| `OutputData` | Output bytes; stdout and stderr are combined |
+| `HeartbeatEvent` | Process alive, no output in the last two ticks |
+| `ProcessEnd` | Exit code, duration, success. A non-zero exit is a `ProcessEnd`, not an error |
+| `ProcessError` | Failure that is not a non-zero exit |
+| `TerminalResizeEvent` | Terminal size change (PTY) |
+| `ContainerCreate` / `ContainerRemove` | Container created / cleaned up |
+| `ImagePullStart` / `ImagePullProgress` / `ImagePullComplete` | Image pull (container) |
+
+## Streaming Behaviour
+
+- Output is flushed every flush interval (default 1s) or when the buffer reaches the max size (default 10MB), and once more on exit.
+- Pipe mode is not line-buffered: events can split mid-line. Reassemble lines in the consumer if needed.
+- Stdout and stderr share one pipe, so their relative order is preserved but they cannot be distinguished.
+
+## Cancellation and Signals
+
+Breaking out of the range loop or cancelling the context stops the child through the `Cancellor` (SIGTERM to the process group, SIGKILL after the timeout) and waits for all goroutines before the iterator returns. Containers are stopped and then removed.
+
+Children run in their own process group (pipe: `Setpgid`, PTY: `Setsid`), so they do not receive Ctrl-C from your terminal. Use `signal.NotifyContext` for SIGINT/SIGTERM and cancel the context, as in the Quick Start.
+
+Known limits:
+
+- PTY children that create job-control subgroups (e.g. interactive shells) have descendants the group kill does not reach.
+- Grandchildren that daemonize are not killed when the child exits normally.
+
+## Error Handling
+
+- A process that cannot start yields a `ProcessStartError` as the iterator error.
+- Failures after start arrive as `ProcessError` events; non-zero exits arrive as `ProcessEnd` with `Success == false`.
+
+```go
+var startErr consolestream.ProcessStartError
+if errors.As(err, &startErr) {
+    fmt.Printf("could not start %s: %v\n", startErr.Cmd, startErr.Err)
 }
 ```
 
@@ -223,7 +223,7 @@ env:
 go get github.com/wolfeidau/console-stream
 ```
 
-**Requirements**: Go 1.25+, Unix-like system
+**Requirements**: Go 1.26+, Unix-like system
 
 ## License
 

@@ -1,14 +1,16 @@
 # Console Stream
 
-A Go library for executing processes and streaming their output in real-time using Go 1.23+ iterators.
+A Go library for executing processes and streaming their output in real-time using Go iterators (`iter.Seq2`).
 
 ## Features
 
 - **Real-time streaming**: Stream process output in 1-second intervals or when buffers reach 10MB
-- **Iterator interface**: Uses Go 1.23+ `iter.Seq2[Event, error]` for clean consumption
+- **Iterator interface**: Uses `iter.Seq2[Event, error]` for clean consumption
 - **Event-driven architecture**: Process lifecycle events, output data, and heartbeat monitoring
 - **PTY support**: Run processes in pseudo-terminals to capture interactive output, ANSI escape sequences, and progress bars
-- **Pluggable cancellation**: Interface-based cancellation for different execution environments
+- **Pluggable cancellation**: `Cancellor` interface; the default stops the whole process group (SIGTERM, then SIGKILL)
+- **Container mode**: Run commands in Docker/Podman containers with image pull progress
+- **Asciicast**: Convert PTY streams to asciicast v3
 - **Buffer management**: Automatic flushing with configurable size limits
 - **Context support**: Full context cancellation with graceful cleanup
 
@@ -22,36 +24,37 @@ package main
 import (
     "context"
     "fmt"
-    "time"
+    "os"
+    "os/signal"
+    "syscall"
 
     consolestream "github.com/wolfeidau/console-stream"
 )
 
 func main() {
-    // Create a local cancellor with 5 second timeout
-    cancellor := consolestream.NewLocalCancellor(5 * time.Second)
+    // Children do not receive Ctrl-C; cancel ctx on SIGINT/SIGTERM instead.
+    ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+    defer stop()
 
-    // Create a process
-    process := consolestream.NewPipeProcess("echo", cancellor, "Hello, World!")
+    process := consolestream.NewProcess("echo", []string{"Hello, World!"})
 
-    // Execute and stream
-    ctx := context.Background()
-    for part, err := range process.ExecuteAndStream(ctx) {
+    for event, err := range process.ExecuteAndStream(ctx) {
         if err != nil {
             fmt.Printf("Error: %v\n", err)
             break
         }
 
-        switch part.EventType() {
-        case consolestream.PipeOutputEvent:
-            event := part.Event.(*consolestream.PipeOutputData)
-            fmt.Printf("[%s] %s: %s", event.Stream.String(), part.Timestamp.Format("15:04:05"), string(event.Data))
-        case consolestream.ProcessStartEvent:
-            event := part.Event.(*consolestream.ProcessStart)
-            fmt.Printf("Process started (PID: %d)\n", event.PID)
-        case consolestream.ProcessEndEvent:
-            event := part.Event.(*consolestream.ProcessEnd)
-            fmt.Printf("Process completed (Exit Code: %d)\n", event.ExitCode)
+        switch e := event.Event.(type) {
+        case *consolestream.ProcessStart:
+            fmt.Printf("Process started (PID: %d)\n", e.PID)
+        case *consolestream.OutputData:
+            fmt.Printf("[%s] %s", event.Timestamp.Format("15:04:05"), e.Data)
+        case *consolestream.HeartbeatEvent:
+            fmt.Printf("alive after %s\n", e.ElapsedTime)
+        case *consolestream.ProcessEnd:
+            fmt.Printf("Process completed (Exit Code: %d)\n", e.ExitCode)
+        case *consolestream.ProcessError:
+            fmt.Printf("Process error: %s\n", e.Message)
         }
     }
 }
@@ -60,200 +63,96 @@ func main() {
 ### PTY Example
 
 ```go
-// Run process in pseudo-terminal to capture interactive output
-ptyProcess := consolestream.NewPTYProcess("npm", cancellor, "install", "--progress")
+// PTY mode captures interactive output, ANSI escape sequences and progress bars.
+process := consolestream.NewProcess("npm", []string{"install", "--progress"},
+    consolestream.WithPTYMode(),
+    consolestream.WithPTYSize(&pty.Winsize{Rows: 24, Cols: 80}), // github.com/creack/pty
+    consolestream.WithEnvVar("NODE_ENV", "production"))
 
-for part, err := range ptyProcess.ExecuteAndStream(ctx) {
+for event, err := range process.ExecuteAndStream(ctx) {
     if err != nil {
-        fmt.Printf("Error: %v\n", err)
         break
     }
-
-    switch part.EventType() {
-    case consolestream.PTYPipeOutputEvent:
-        event := part.Event.(*consolestream.PTYPipeOutputData)
+    if e, ok := event.Event.(*consolestream.OutputData); ok {
         // Raw terminal output with ANSI escape sequences preserved
-        fmt.Printf("[PTY] %s: %q\n", part.Timestamp.Format("15:04:05"), string(event.Data))
-    case consolestream.ProcessStartEvent:
-        event := part.Event.(*consolestream.ProcessStart)
-        fmt.Printf("PTY Process started (PID: %d)\n", event.PID)
-    case consolestream.ProcessEndEvent:
-        event := part.Event.(*consolestream.ProcessEnd)
-        fmt.Printf("PTY Process completed (Exit Code: %d)\n", event.ExitCode)
+        fmt.Printf("[PTY] %q\n", e.Data)
     }
 }
 ```
 
-### Streaming Example
+### Container Example
 
 ```go
-// Stream a long-running process
-process := consolestream.NewPipeProcess("go", cancellor, "run", "cmd/tester/main.go", "--duration=5s", "--stdout-rate=3")
+process := consolestream.NewContainerProcess("make", []string{"test"},
+    consolestream.WithContainerImage("golang:1.25"),
+    consolestream.WithContainerMount("/path/to/code", "/workspace", false),
+    consolestream.WithContainerWorkingDir("/workspace"),
+    consolestream.WithContainerEnvMap(map[string]string{"CI": "true"}))
 
-ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-defer cancel()
-
-for part, err := range process.ExecuteAndStream(ctx) {
+for event, err := range process.ExecuteAndStream(ctx) {
     if err != nil {
-        log.Printf("Error: %v", err)
         break
     }
-
-    switch part.EventType() {
-    case consolestream.PipeOutputEvent:
-        event := part.Event.(*consolestream.PipeOutputData)
-        fmt.Printf("Received %d bytes from %s at %s\n",
-            len(event.Data),
-            event.Stream.String(),
-            part.Timestamp.Format("15:04:05.000"))
-    case consolestream.HeartbeatEventType:
-        fmt.Printf("Process heartbeat at %s\n", part.Timestamp.Format("15:04:05.000"))
+    switch e := event.Event.(type) {
+    case *consolestream.ImagePullProgress:
+        fmt.Printf("pull %s: %d%%\n", e.Image, e.PercentComplete)
+    case *consolestream.OutputData:
+        fmt.Print(string(e.Data))
     }
 }
+```
+
+### Asciicast Example
+
+```go
+process := consolestream.NewProcess("bash", []string{"-c", "ls --color"}, consolestream.WithPTYMode())
+metadata := consolestream.AscicastV3Metadata{
+    Term:    consolestream.TermInfo{Cols: 80, Rows: 24},
+    Command: "ls --color",
+}
+
+f, _ := os.Create("session.cast")
+defer f.Close()
+
+err := consolestream.WriteAscicastV3(process.ExecuteAndStream(ctx), metadata, func(b []byte) error {
+    _, err := f.Write(b)
+    return err
+})
 ```
 
 ## API Reference
 
-### Types
+### Process Functions and Options
 
 ```go
-type PipeProcess struct {
-    // Contains filtered or unexported fields
-}
+// NewProcess creates a process. Default mode is pipe.
+func NewProcess(cmd string, args []string, opts ...ProcessOption) *Process
 
-// Process is an alias for PipeProcess (backward compatibility)
-type Process = PipeProcess
+// ExecuteAndStream starts the process and returns an iterator over events.
+func (p *Process) ExecuteAndStream(ctx context.Context) iter.Seq2[Event, error]
+func (p *Process) GetStats() ProcessStatsSnapshot
 
-type Event struct {
-    Timestamp time.Time
-    Event     StreamEvent
-}
-
-type StreamEvent interface {
-    Type() EventType
-    String() string
-}
-
-type PipeOutputData struct {
-    Data   []byte
-    Stream StreamType  // Stdout or Stderr
-}
-
-type ProcessStart struct {
-    PID     int
-    Command string
-    Args    []string
-}
-
-type ProcessEnd struct {
-    ExitCode int
-    Duration time.Duration
-    Success  bool
-}
-
-type HeartbeatEvent struct {
-    ProcessAlive bool
-    ElapsedTime  time.Duration
-}
-
-type PTYProcess struct {
-    // Contains filtered or unexported fields
-}
-
-type PTYPipeOutputData struct {
-    Data []byte
-}
-
-type TerminalResizeEvent struct {
-    Rows uint16
-    Cols uint16
-    X    uint16 // Width in pixels
-    Y    uint16 // Height in pixels
-}
-
-type ContainerProcess struct {
-    // Contains filtered or unexported fields
-}
-
-type ContainerMount struct {
-    Source   string
-    Target   string
-    ReadOnly bool
-}
-
-type ContainerCreate struct {
-    ContainerID string
-    Image       string
-}
-
-type ContainerRemove struct {
-    ContainerID string
-}
-
-type ImagePullStart struct {
-    Image string
-}
-
-type ImagePullProgress struct {
-    Image           string
-    Status          string
-    PercentComplete int
-    BytesDownloaded int64
-    BytesTotal      int64
-}
-
-type ImagePullComplete struct {
-    Image  string
-    Digest string
-}
-
-type StreamType int
-
-const (
-    Stdout StreamType = iota
-    Stderr
-)
-
-func (s StreamType) String() string
-
-type Cancellor interface {
-    Cancel(ctx context.Context, pid int) error
-}
+func WithPipeMode() ProcessOption                     // stdout+stderr over one pipe (default)
+func WithPTYMode() ProcessOption                      // pseudo-terminal
+func WithPTYSize(size *pty.Winsize) ProcessOption     // PTY dimensions (github.com/creack/pty)
+func WithCancellor(c Cancellor) ProcessOption         // default: NewLocalCancellor(5s)
+func WithEnv(env []string) ProcessOption              // "KEY=value" entries
+func WithEnvVar(key, value string) ProcessOption
+func WithEnvMap(m map[string]string) ProcessOption
+func WithWorkingDir(dir string) ProcessOption
+func WithFlushInterval(d time.Duration) ProcessOption // default 1s
+func WithMaxBufferSize(size int) ProcessOption        // default 10MB
+func WithMeter(meter metric.Meter) ProcessOption      // OpenTelemetry metrics
 ```
 
-### Functions
+### Container Functions and Options
 
 ```go
-// NewPipeProcess creates a new pipe process with the given command, cancellor, and arguments
-func NewPipeProcess(cmd string, cancellor Cancellor, args ...string) *PipeProcess
-
-// NewPipeProcess creates a new process (alias for NewPipeProcess - backward compatibility)
-func NewPipeProcess(cmd string, cancellor Cancellor, args ...string) *Process
-
-// NewLocalCancellor creates a cancellor for local processes with SIGTERM/SIGKILL timeout
-func NewLocalCancellor(terminateTimeout time.Duration) *LocalCancellor
-
-// ExecuteAndStream starts the pipe process and returns an iterator over Event objects
-func (p *PipeProcess) ExecuteAndStream(ctx context.Context) iter.Seq2[Event, error]
-
-// NewPTYProcess creates a new PTY process with default terminal size
-func NewPTYProcess(cmd string, cancellor Cancellor, args ...string) *PTYProcess
-
-// NewPTYProcessWithSize creates a new PTY process with specified terminal size
-func NewPTYProcessWithSize(cmd string, cancellor Cancellor, size pty.Winsize, args ...string) *PTYProcess
-
-// ExecuteAndStream starts a PTY process and returns an iterator over Event objects
-func (p *PTYProcess) ExecuteAndStream(ctx context.Context) iter.Seq2[Event, error]
-
-// NewContainerProcess creates a new container process with functional options
 func NewContainerProcess(cmd string, args []string, opts ...ContainerProcessOption) *ContainerProcess
-
-// ExecuteAndStream starts a container and returns an iterator over Event objects
 func (cp *ContainerProcess) ExecuteAndStream(ctx context.Context) iter.Seq2[Event, error]
 
-// Container-specific options
-func WithContainerImage(image string) ContainerProcessOption
-func WithContainerRuntime(runtime string) ContainerProcessOption
+func WithContainerImage(image string) ContainerProcessOption // required
+func WithContainerRuntime(runtime string) ContainerProcessOption // "docker" (default) or "podman"
 func WithContainerMount(source, target string, readOnly bool) ContainerProcessOption
 func WithContainerEnv(env []string) ContainerProcessOption
 func WithContainerEnvMap(envMap map[string]string) ContainerProcessOption
@@ -263,41 +162,111 @@ func WithContainerMaxBufferSize(size int) ContainerProcessOption
 func WithContainerMeter(meter metric.Meter) ContainerProcessOption
 ```
 
-### Error Types
+There is no container Cancellor option: cancellation stops the container via the runtime.
+
+### Events
 
 ```go
+type Event struct {
+    Timestamp time.Time
+    Event     StreamEvent
+}
+func (e Event) EventType() EventType
+
+type StreamEvent interface {
+    Type() EventType
+    String() string
+}
+
+const (
+    ProcessStartEvent EventType = iota
+    ProcessEndEvent
+    ProcessErrorEvent
+    HeartbeatEventType
+    OutputEvent
+    TerminalResizeEventType
+    ContainerCreateEvent
+    ContainerRemoveEvent
+    ImagePullStartEvent
+    ImagePullProgressEvent
+    ImagePullCompleteEvent
+)
+```
+
+| Event struct | Fields | Notes |
+|--------------|--------|-------|
+| `ProcessStart` | `PID, Command, Args` | |
+| `OutputData` | `Data []byte` | Combined stdout/stderr (pipe) or PTY output |
+| `HeartbeatEvent` | `ProcessAlive, ElapsedTime` | Silent process keep-alive |
+| `ProcessEnd` | `ExitCode, Duration, Success` | A non-zero exit is a `ProcessEnd` with `Success == false`, not an error |
+| `ProcessError` | `Error, Message` | Failure that is not a non-zero exit |
+| `TerminalResizeEvent` | `Rows, Cols, X, Y` | PTY |
+| `ContainerCreate` / `ContainerRemove` | `ContainerID, Image` / `ContainerID` | Container mode |
+| `ImagePullStart` / `ImagePullProgress` / `ImagePullComplete` | `Image` / `Image, Status, PercentComplete, BytesDownloaded, BytesTotal` / `Image, Digest` | Container mode |
+
+Helpers: `IsOutputEvent`, `IsHeartbeatEvent`, `IsProcessStartEvent`, `IsProcessEndEvent`, `IsProcessErrorEvent`, `IsProcessLifecycleEvent`, `IsTerminalResizeEvent`, `IsContainerCreateEvent`, `IsContainerRemoveEvent`.
+
+### Cancellor
+
+```go
+type Cancellor interface {
+    Cancel(ctx context.Context, pid int) error
+}
+
+// SIGTERM to the process group, SIGKILL after terminateTimeout or ctx done.
+func NewLocalCancellor(terminateTimeout time.Duration) *LocalCancellor
+```
+
+### Asciicast
+
+```go
+func ToAscicastV3(events iter.Seq2[Event, error], metadata AscicastV3Metadata) iter.Seq2[AscicastV3Line, error]
+func WriteAscicastV3(events iter.Seq2[Event, error], metadata AscicastV3Metadata, writeFunc func([]byte) error) error
+func NewOutputEvent(interval float64, data string) AscicastV3Event
+func NewResizeEvent(interval float64, cols, rows uint16) AscicastV3Event
+func NewExitEvent(interval float64, exitCode int) AscicastV3Event
+```
+
+### Errors
+
+```go
+// Yielded as the iterator error when the process or container cannot start.
 type ProcessStartError struct {
     Cmd string
     Err error
 }
-
-type ProcessFailedError struct {
-    Cmd      string
-    ExitCode int
-}
-
-type ProcessKilledError struct {
-    Cmd    string
-    Signal string
-}
 ```
+
+Runtime failures after start are reported as `ProcessError` events; non-zero exits as `ProcessEnd`.
 
 ## Behavior
 
 ### Streaming Rules
 
-1. **Time-based flushing**: Buffers are flushed every 1 second if they contain data
-2. **Size-based flushing**: Buffers are flushed immediately when they reach 10MB
-3. **Final flushing**: Any remaining buffer data is flushed when the process exits
-4. **Separate streams**: Stdout and stderr are buffered and flushed independently
+1. **Time-based flushing**: Buffers flush every flush interval (default 1s) if they contain data
+2. **Size-based flushing**: Buffers flush immediately at the max buffer size (default 10MB)
+3. **Final flushing**: Remaining data is flushed when the process exits
+4. **Combined output**: In pipe mode stdout and stderr share one pipe, so relative order is preserved and they cannot be told apart. A single `OutputData` event type carries both.
+5. **Not line-buffered**: Events may split mid-line; partial lines stream on the flush interval. Consumers that need lines must reassemble them.
+6. **Heartbeat**: a `HeartbeatEvent` is emitted on a tick when there was no output in the previous tick and none in the current one.
 
 ### Process Lifecycle
 
-1. Process starts and PID is stored
-2. Stdout/stderr are read concurrently into separate buffers
-3. Events are yielded based on time/size triggers and process lifecycle
-4. On context cancellation, the configured Cancellor is used
-5. Process exit is handled with appropriate error types
+1. `ProcessStart` is yielded with the PID
+2. Output is read into a `BufferWriter`; `OutputData` and `HeartbeatEvent` are yielded on flush ticks or size triggers
+3. On exit, final output is flushed, then `ProcessEnd` (or `ProcessError` for non-exit failures)
+4. Breaking out of the range loop or cancelling ctx stops the child via the Cancellor (SIGTERM to the process group, SIGKILL after the timeout, which is honoured on ctx cancel too) and waits for all goroutines before the iterator returns. A reaped pid is never signalled.
+5. `ExecuteAndStream` keeps per-run state locally, so concurrent calls on one `Process` are safe.
+
+### Process Groups and Signals
+
+- Pipe children start with `Setpgid`; PTY children with `Setsid`. They do not receive terminal-generated signals (Ctrl-C). Callers should use `signal.NotifyContext` for SIGINT/SIGTERM and cancel the ctx.
+- `LocalCancellor` signals the group (`kill(-pid)`), falling back to the bare pid for non-leaders. The group is also signalled after the leader is reaped, so grandchildren holding the pipe/tty are terminated on early break or cancel.
+- Known limits: PTY children that create job-control subgroups (e.g. interactive shells) have descendants outside the group that are not reached; grandchildren that daemonize are not killed after a normal child exit.
+
+### Container Lifecycle
+
+Event order: `ContainerCreate → ProcessStart → OutputData/Heartbeat → ProcessEnd | ProcessError → ContainerRemove`. If the image is missing, `ImagePullStart → ImagePullProgress (every 2s) → ImagePullComplete` precede creation. Breaking out of the loop or cancelling ctx stops the container (ContainerStop), drains goroutines, then force-removes it. Only the iterator goroutine yields events. Container logs are demultiplexed into the same combined output stream.
 
 ## Testing
 
@@ -429,7 +398,9 @@ func TestToAscicastV3EventTransformation(t *testing.T) {
 ### Building
 
 ```bash
-go build .
+go build ./...
+make check    # go vet, go mod tidy -diff
+make quality  # check + lint + test
 ```
 
 ### Examples
@@ -439,12 +410,17 @@ See the `example/` directory for usage examples:
 - `example/simple/`: Basic echo example
 - `example/stream/`: Streaming output example
 - `example/burst/`: Large buffer testing
+- `example/buffering/`: Buffer flushing behaviour
 - `example/pty/`: PTY examples with interactive terminal features
+- `example/container/`: Container execution with mounts and env
+- `example/asciicast/`: Asciicast v3 recording
 - `example/logging/`: Event type demonstration and JSON serialization
+
+`cmd/runner` executes a YAML-configured command; `cmd/tester` generates test output.
 
 ## Requirements
 
-- Go 1.23+ (for `iter` package support)
+- Go 1.26+ (see `go.mod`)
 - Unix-like system (for signal handling in LocalCancellor)
 
 ## License
