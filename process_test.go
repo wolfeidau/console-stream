@@ -175,6 +175,43 @@ func TestProcessExecuteAndStreamExitCode(t *testing.T) {
 	require.False(t, success)
 }
 
+func TestProcessExecuteAndStreamSignalExitCode(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		sig  string
+		opts []ProcessOption
+		want int
+	}{
+		{"pipe kill", "KILL", nil, 137},
+		{"pty kill", "KILL", []ProcessOption{WithPTYMode()}, 137},
+		{"pipe term", "TERM", nil, 143},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			process := NewProcess("bash", []string{"-c", "kill -" + tt.sig + " $$"}, tt.opts...)
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+
+			var end *ProcessEnd
+			for part, err := range process.ExecuteAndStream(ctx) {
+				require.NoError(t, err)
+				if e, ok := part.Event.(*ProcessEnd); ok {
+					end = e
+				}
+			}
+
+			require.NotNil(t, end)
+			require.Equal(t, tt.want, end.ExitCode)
+			require.False(t, end.Success)
+		})
+	}
+}
+
 func TestProcessCancellation(t *testing.T) {
 	t.Parallel()
 

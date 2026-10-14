@@ -198,7 +198,7 @@ const (
 | `ProcessStart` | `PID, Command, Args` | |
 | `OutputData` | `Data []byte` | Combined stdout/stderr (pipe) or PTY output |
 | `HeartbeatEvent` | `ProcessAlive, ElapsedTime` | Silent process keep-alive |
-| `ProcessEnd` | `ExitCode, Duration, Success` | A non-zero exit is a `ProcessEnd` with `Success == false`, not an error |
+| `ProcessEnd` | `ExitCode, Duration, Success` | A non-zero exit is a `ProcessEnd` with `Success == false`, not an error. A signal-terminated process reports `128 + signal` (137 for SIGKILL), matching shells and container mode |
 | `ProcessError` | `Error, Message` | Failure that is not a non-zero exit |
 | `TerminalResizeEvent` | `Rows, Cols, X, Y` | PTY |
 | `ContainerCreate` / `ContainerRemove` | `ContainerID, Image` / `ContainerID` | Container mode |

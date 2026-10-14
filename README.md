@@ -160,7 +160,7 @@ err = consolestream.WriteAscicastV3(process.ExecuteAndStream(ctx), metadata, fun
 | `ProcessStart` | Process started (PID, command, args) |
 | `OutputData` | Output bytes; stdout and stderr are combined |
 | `HeartbeatEvent` | Process alive, no output in the last two ticks |
-| `ProcessEnd` | Exit code, duration, success. A non-zero exit is a `ProcessEnd`, not an error |
+| `ProcessEnd` | Exit code, duration, success. A non-zero exit is a `ProcessEnd`, not an error. A signal-terminated process reports `128 + signal` (137 for SIGKILL), matching shells and container mode |
 | `ProcessError` | Failure that is not a non-zero exit |
 | `TerminalResizeEvent` | Terminal size change (PTY) |
 | `ContainerCreate` / `ContainerRemove` | Container created / cleaned up |

@@ -3,6 +3,7 @@ package consolestream
 import (
 	"context"
 	"os/exec"
+	"syscall"
 	"time"
 )
 
@@ -92,13 +93,22 @@ func streamOutput(
 	}
 }
 
+// exitCodeOf returns the exit code, using the shell convention 128+signal for
+// signal-terminated processes (Go reports -1).
+func exitCodeOf(exitErr *exec.ExitError) int {
+	if ws, ok := exitErr.Sys().(syscall.WaitStatus); ok && ws.Signaled() {
+		return 128 + int(ws.Signal())
+	}
+	return exitErr.ExitCode()
+}
+
 // emitProcessEnd records final stats and yields ProcessEnd, or ProcessError for
 // failures that are not a non-zero exit. label prefixes the error message.
 func emitProcessEnd(ctx context.Context, yield func(Event, error) bool, stats *ProcessStats, err error, start, end time.Time, label string) {
 	exitCode := 0
 	exitErr, isExit := err.(*exec.ExitError)
 	if isExit {
-		exitCode = exitErr.ExitCode()
+		exitCode = exitCodeOf(exitErr)
 	}
 
 	if stats != nil {
