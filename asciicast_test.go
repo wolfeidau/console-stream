@@ -298,6 +298,37 @@ func TestToAscicastV3(t *testing.T) {
 		require.Contains(t, string(exitData), `"x"`)
 	})
 
+	t.Run("intervals are relative to last emitted event", func(t *testing.T) {
+		t0 := time.Date(2024, 1, 1, 12, 0, 0, 0, time.UTC)
+
+		events := func(yield func(Event, error) bool) {
+			for _, ev := range []Event{
+				{Timestamp: t0, Event: &ProcessStart{PID: 1, Command: "x"}},
+				{Timestamp: t0.Add(1 * time.Second), Event: &OutputData{Data: []byte("a")}},
+				{Timestamp: t0.Add(2 * time.Second), Event: &HeartbeatEvent{ProcessAlive: true}},
+				{Timestamp: t0.Add(3 * time.Second), Event: &HeartbeatEvent{ProcessAlive: true}},
+				{Timestamp: t0.Add(5 * time.Second), Event: &OutputData{Data: []byte("b")}},
+				{Timestamp: t0.Add(5 * time.Second), Event: &ProcessEnd{ExitCode: 0}},
+			} {
+				if !yield(ev, nil) {
+					return
+				}
+			}
+		}
+
+		lines := collectAscicastLines(ToAscicastV3(events, AscicastV3Metadata{Term: TermInfo{Cols: 80, Rows: 24}}))
+		require.Len(t, lines, 4)
+
+		want := []float64{1.0, 4.0, 0.0}
+		for i, w := range want {
+			data, err := lines[i+1].MarshalJSON()
+			require.NoError(t, err)
+			var ev [3]any
+			require.NoError(t, json.Unmarshal(data, &ev))
+			require.InDelta(t, w, ev[0], 1e-9)
+		}
+	})
+
 	t.Run("handles error propagation", func(t *testing.T) {
 		testErr := errors.New("test error")
 
