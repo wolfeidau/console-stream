@@ -153,6 +153,18 @@ func TestAscicastV3EventMarshalJSON(t *testing.T) {
 		require.Equal(t, "x", result[1])
 		require.Equal(t, "1", result[2])
 	})
+
+	t.Run("NewMarkerEvent", func(t *testing.T) {
+		data, err := NewMarkerEvent(2.5, "error: boom").MarshalJSON()
+		require.NoError(t, err)
+
+		var result [3]any
+		require.NoError(t, json.Unmarshal(data, &result))
+
+		require.Equal(t, 2.5, result[0])
+		require.Equal(t, "m", result[1])
+		require.Equal(t, "error: boom", result[2])
+	})
 }
 
 func TestToAscicastV3(t *testing.T) {
@@ -589,4 +601,67 @@ func collectAscicastLines(seq iter.Seq2[AscicastV3Line, error]) []AscicastV3Line
 		lines = append(lines, line)
 	}
 	return lines
+}
+
+func TestToAscicastV3ProcessError(t *testing.T) {
+	t.Parallel()
+
+	t0 := time.Date(2024, 1, 1, 12, 0, 0, 0, time.UTC)
+
+	t.Run("ends with marker and no exit event", func(t *testing.T) {
+		events := []Event{
+			{Timestamp: t0, Event: &ProcessStart{PID: 1}},
+			{Timestamp: t0.Add(1 * time.Second), Event: &OutputData{Data: []byte("hi")}},
+			{Timestamp: t0.Add(2 * time.Second), Event: &HeartbeatEvent{ProcessAlive: true}},
+			{Timestamp: t0.Add(3 * time.Second), Event: &ProcessError{Error: errors.New("boom"), Message: "process terminated unexpectedly"}},
+			{Timestamp: t0.Add(4 * time.Second), Event: &OutputData{Data: []byte("late")}},
+			{Timestamp: t0.Add(5 * time.Second), Event: &ProcessEnd{ExitCode: 1}},
+		}
+
+		lines := collectAscicastLines(ToAscicastV3(eventSeq(events), AscicastV3Metadata{}))
+		require.Len(t, lines, 3)
+
+		var o, m [3]any
+		d, err := lines[1].MarshalJSON()
+		require.NoError(t, err)
+		require.NoError(t, json.Unmarshal(d, &o))
+		d, err = lines[2].MarshalJSON()
+		require.NoError(t, err)
+		require.NoError(t, json.Unmarshal(d, &m))
+
+		require.Equal(t, []any{1.0, "o", "hi"}, o[:])
+		require.Equal(t, []any{2.0, "m", "error: process terminated unexpectedly: boom"}, m[:])
+	})
+
+	t.Run("flushes held-back UTF-8 bytes before marker", func(t *testing.T) {
+		events := []Event{
+			{Timestamp: t0, Event: &OutputData{Data: []byte("\xc3")}},
+			{Timestamp: t0.Add(time.Second), Event: &ProcessError{Message: "failed"}},
+		}
+
+		lines := collectAscicastLines(ToAscicastV3(eventSeq(events), AscicastV3Metadata{}))
+		require.Len(t, lines, 3)
+
+		var o, m [3]any
+		d, err := lines[1].MarshalJSON()
+		require.NoError(t, err)
+		require.NoError(t, json.Unmarshal(d, &o))
+		d, err = lines[2].MarshalJSON()
+		require.NoError(t, err)
+		require.NoError(t, json.Unmarshal(d, &m))
+
+		require.Equal(t, "o", o[1])
+		require.Contains(t, o[2], "\xef\xbf\xbd")
+		require.Equal(t, []any{0.0, "m", "error: failed"}, m[:])
+	})
+}
+
+func eventSeq(events []Event) iter.Seq2[Event, error] {
+	return func(yield func(Event, error) bool) {
+		for _, ev := range events {
+			if !yield(ev, nil) {
+				return
+			}
+		}
+	}
 }

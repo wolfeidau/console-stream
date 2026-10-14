@@ -151,7 +151,7 @@ err = consolestream.WriteAscicastV3(process.ExecuteAndStream(ctx), metadata, fun
 })
 ```
 
-`ToAscicastV3` returns the lines as an iterator if you need to process them yourself.
+`ToAscicastV3` returns the lines as an iterator if you need to process them yourself. A `ProcessError` ends the recording with an `"m"` marker (`error: <message>`) instead of an `"x"` exit event.
 
 ## Events
 

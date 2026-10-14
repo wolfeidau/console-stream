@@ -225,7 +225,10 @@ func WriteAscicastV3(events iter.Seq2[Event, error], metadata AscicastV3Metadata
 func NewOutputEvent(interval float64, data string) AscicastV3Event
 func NewResizeEvent(interval float64, cols, rows uint16) AscicastV3Event
 func NewExitEvent(interval float64, exitCode int) AscicastV3Event
+func NewMarkerEvent(interval float64, label string) AscicastV3Event
 ```
+
+A `ProcessError` ends the recording with an `"m"` marker instead of an `"x"` exit event.
 
 ### Errors
 
