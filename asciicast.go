@@ -106,25 +106,25 @@ func ToAscicastV3(events iter.Seq2[Event, error], metadata AscicastV3Metadata) i
 				continue
 			}
 
-			// Calculate interval from last event (0 for first event)
-			var interval float64
+			// Intervals are relative to the previous emitted line; the first
+			// event (any type) anchors the cursor so filtered events only
+			// initialise it and never advance it.
 			if !lastEventTimeSet {
-				interval = 0
 				lastEventTime = event.Timestamp
 				lastEventTimeSet = true
-			} else {
-				interval = event.Timestamp.Sub(lastEventTime).Seconds()
-				lastEventTime = event.Timestamp
 			}
+			interval := event.Timestamp.Sub(lastEventTime).Seconds()
 
 			// Transform based on event type
 			switch e := event.Event.(type) {
 			case *OutputData:
+				lastEventTime = event.Timestamp
 				if !yield(NewOutputEvent(interval, string(e.Data)), nil) {
 					return
 				}
 
 			case *TerminalResizeEvent:
+				lastEventTime = event.Timestamp
 				if !yield(NewResizeEvent(interval, e.Cols, e.Rows), nil) {
 					return
 				}
