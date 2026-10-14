@@ -153,6 +153,10 @@ err = consolestream.WriteAscicastV3(process.ExecuteAndStream(ctx), metadata, fun
 
 `ToAscicastV3` returns the lines as an iterator if you need to process them yourself. A `ProcessError` ends the recording with an `"m"` marker (`error: <message>`) instead of an `"x"` exit event.
 
+`ToAscicastV3` maps each event type to a line: output to `"o"`, `TerminalResizeEvent` to `"r"`, and process end to `"x"`. The library does not emit resize events itself (PTY size is fixed by `WithPTYSize`); callers wrapping the event stream may inject them.
+
+Output is grouped per flush interval (default 1s), so animations and progress bars play back in 1s steps. Use `WithFlushInterval(50*time.Millisecond)` when recording for finer timing. Always record with `WithPTYMode()`.
+
 ## Events
 
 | Event | Description |
