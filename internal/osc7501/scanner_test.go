@@ -233,3 +233,14 @@ func FuzzScanner(f *testing.F) {
 		require.Equal(t, string(data), out.String())
 	})
 }
+
+func TestQueryReplyIsNotAQuery(t *testing.T) {
+	c := &capture{}
+	s := c.scanner()
+	n, err := s.Write([]byte(QueryReply))
+	require.NoError(t, err)
+	require.Equal(t, len(QueryReply), n)
+	require.Empty(t, c.reports)
+	require.Zero(t, c.queries)
+	require.Equal(t, QueryReply, c.out.String())
+}

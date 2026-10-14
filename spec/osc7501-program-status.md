@@ -69,13 +69,19 @@ Many programs emit OSC only when stdout is a TTY, so PTY mode sees the most traf
    - `streamOutput` splits the batch at the status offsets, yielding `OutputData` before each `ProgramStatus` in byte order. Adding a status signals a flush so it is delivered promptly.
    - A channel from the callback to the event loop is not used: the copy goroutine keeps writing, so a channel races with the buffered bytes and breaks ordering.
 4. **Lifetime**: console-stream keeps no terminal record store and emits no synthetic `idle` on exit. Consumers apply the lifetime rule themselves after `ProcessEnd`/`ProcessError`.
-5. **Feature-detect reply** (later, opt-in): on `OnQuery`, write `\x1b]7501;?\x1b\\` back to the child.
+5. **Feature-detect reply** (PTY only, behind `WithProgramStatus()`): on `OnQuery`, write `osc7501.QueryReply` to the PTY master so the child reads it on stdin.
+   - Bytes: `ESC ] 7501 ; ? : states=idle,working,done,blocked,error : kinds=permission,question,auth ESC \\` (the rev 0.4 defaults).
+   - Echo safety: the body differs from the query, so if the tty echoes the reply, `Scanner` does not take it for a new query and there is no reply loop.
+   - The reader goroutine only signals a 1-slot channel (a pending reply covers coalesced queries). A separate goroutine writes, so a child that does not read stdin cannot block output draining. Closing the master unblocks a stuck write.
+   - Pipe and container modes have no stdin back-channel, so no reply is sent; programs there should report without querying (allowed since rev 0.3).
+   - `CSI c` (DA1) is not answered. Our reply arrives first, so DA1-fallback programs conclude the protocol is supported. Programs that also wait for the DA1 reply wait until their own timeout.
 6. **Asciicast**: map `ProgramStatus` to an `"m"` marker labelled `status: <state>[/<kind>][ <id>][ <progress>%][: <msg>]`, only when `(id, state, kind)` changes; progress-only updates get no marker.
 7. **Runner**: render status lines. Follow-up: re-emit aggregated OSC 7501 to the runner's own TTY.
 
 ## Phasing
 - **v1:** `internal/osc7501` parser/scanner, the `ProgramStatus` event and wiring for all modes (pipe, PTY and container share `BufferWriter`), and asciicast markers. The parser/scanner lands first as its own PR.
-- **Later:** query reply, runner rendering and re-emit, metrics.
+- **Query reply:** PTY mode answers the feature query.
+- **Later:** runner rendering and re-emit, metrics.
 
 ## Effort
 - `internal/osc7501` package: about 300 LOC, plus about 300 LOC of table and fuzz tests.

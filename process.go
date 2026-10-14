@@ -210,7 +210,26 @@ func (p *Process) run(ctx context.Context, yield func(Event, error) bool) {
 		}), ProcessStartError{Cmd: p.cmd, Err: err})
 		return
 	}
-	defer out.Close()
+
+	// In PTY mode a feature query is answered by writing to the master, which
+	// the child reads on stdin. The reader only signals; this goroutine writes.
+	var replies chan struct{}
+	replierDone := make(chan struct{})
+	if p.programStatus && p.mode == PTYMode {
+		replies = make(chan struct{}, 1)
+		go func() {
+			defer close(replierDone)
+			for range replies {
+				_, _ = out.Write([]byte(osc7501.QueryReply)) // child may have exited
+			}
+		}()
+	}
+	defer func() {
+		_ = out.Close() // unblocks a pending reply write
+		if replies != nil {
+			<-replierDone
+		}
+	}()
 
 	pid := cmd.Process.Pid
 	processStart := time.Now()
@@ -230,9 +249,21 @@ func (p *Process) run(ctx context.Context, yield func(Event, error) bool) {
 	readerDone := make(chan struct{})
 	go func() {
 		defer close(readerDone)
+		if replies != nil {
+			defer close(replies)
+		}
 		var dst io.Writer = w
 		if p.programStatus {
-			dst = &osc7501.Scanner{W: w, OnReport: w.addStatus}
+			s := &osc7501.Scanner{W: w, OnReport: w.addStatus}
+			if replies != nil {
+				s.OnQuery = func() {
+					select { // a pending reply covers coalesced queries
+					case replies <- struct{}{}:
+					default:
+					}
+				}
+			}
+			dst = s
 		}
 		_, _ = io.Copy(dst, out)
 	}()
