@@ -27,6 +27,9 @@ type Config struct {
 	ProcessType string            `yaml:"process_type"` // "pipe" or "pty"
 	Timeout     string            `yaml:"timeout"`      // e.g., "30s"
 	PTYSize     *PTYSize          `yaml:"pty_size,omitempty"`
+
+	ProgramStatus bool `yaml:"program_status"`  // parse OSC 7501 reports
+	FailOnBlocked bool `yaml:"fail_on_blocked"` // stop and fail on a blocked status
 }
 
 type PTYSize struct {
@@ -183,7 +186,9 @@ func runExec(flags ExecFlags, logger *slog.Logger) error {
 		"command", config.Command,
 		"args", config.Args,
 		"type", config.ProcessType,
-		"env_vars", len(config.Env))
+		"env_vars", len(config.Env),
+		"program_status", config.ProgramStatus,
+		"fail_on_blocked", config.FailOnBlocked)
 
 	// Apply timeout override if provided
 	timeout := config.Timeout
@@ -268,6 +273,10 @@ func loadConfig(configPath string) (*Config, error) {
 		return nil, fmt.Errorf("command is required in configuration")
 	}
 
+	if config.FailOnBlocked && !config.ProgramStatus {
+		return nil, fmt.Errorf("fail_on_blocked requires program_status")
+	}
+
 	// Set defaults
 	if config.ProcessType == "" {
 		config.ProcessType = "pipe"
@@ -302,6 +311,10 @@ func executeProcess(ctx context.Context, config *Config, format string, enableMe
 	// Add environment variables
 	if len(config.Env) > 0 {
 		opts = append(opts, consolestream.WithEnvMap(config.Env))
+	}
+
+	if config.ProgramStatus {
+		opts = append(opts, consolestream.WithProgramStatus())
 	}
 
 	// Configure metrics if enabled
@@ -409,15 +422,22 @@ func formatOutput(events iter.Seq2[consolestream.Event, error], format, outputPa
 		}
 	}
 
+	tracker := newStatusTracker()
+	var blocked func() error
+	var statusEvents iter.Seq2[consolestream.Event, error] = wrappedEvents
+	if config.ProgramStatus {
+		statusEvents, blocked = wrapProgramStatus(wrappedEvents, config.FailOnBlocked, tracker, reemitWriter())
+	}
+
 	// Format output based on requested format
 	var err error
 	switch format {
 	case "text":
-		err = formatTextOutput(wrappedEvents, writer)
+		err = formatTextOutput(statusEvents, writer)
 	case "json":
-		err = formatJSONOutput(wrappedEvents, writer)
+		err = formatJSONOutput(statusEvents, writer)
 	case "asciicast":
-		err = formatAscicastOutput(wrappedEvents, writer, config)
+		err = formatAscicastOutput(statusEvents, writer, config)
 	default:
 		return fmt.Errorf("invalid output format '%s', must be 'text', 'json', or 'asciicast'", format)
 	}
@@ -436,18 +456,27 @@ func formatOutput(events iter.Seq2[consolestream.Event, error], format, outputPa
 		exitCode = fmt.Sprintf("%d", *stats.ExitCode)
 	}
 
-	logger.Info("Execution completed",
+	attrs := []any{
 		"duration", stats.Duration.String(),
 		"exit_code", exitCode,
 		"output_events", stats.EventCount,
 		"error_events", stats.ErrorCount,
 		"output_bytes", stats.OutputBytes,
-		"output_destination", outputDest)
+		"output_destination", outputDest,
+	}
+	if summary := tracker.summary(); config.ProgramStatus && summary != "" {
+		attrs = append(attrs, "program_status", summary)
+	}
+	logger.Info("Execution completed", attrs...)
 
+	if err == nil && blocked != nil {
+		err = blocked()
+	}
 	return err
 }
 
 func formatTextOutput(events iter.Seq2[consolestream.Event, error], writer io.Writer) error {
+	lineEnded := true // whether the last output written ended with a newline
 	for event, err := range events {
 		if err != nil {
 			fmt.Fprintf(writer, "Error: %v\n", err)
@@ -458,6 +487,16 @@ func formatTextOutput(events iter.Seq2[consolestream.Event, error], writer io.Wr
 		case consolestream.OutputEvent:
 			data := event.Event.(*consolestream.OutputData)
 			fmt.Fprintf(writer, "[OUTPUT] %s: %s", event.Timestamp.Format("15:04:05"), string(data.Data))
+			if len(data.Data) > 0 {
+				lineEnded = data.Data[len(data.Data)-1] == '\n'
+			}
+		case consolestream.ProgramStatusEventType:
+			if !lineEnded {
+				fmt.Fprint(writer, "\n")
+				lineEnded = true
+			}
+			data := event.Event.(*consolestream.ProgramStatus)
+			fmt.Fprintf(writer, "[STATUS] %s %s\n", event.Timestamp.Format("15:04:05"), statusLine(data))
 		case consolestream.ProcessStartEvent:
 			data := event.Event.(*consolestream.ProcessStart)
 			fmt.Fprintf(writer, "Process started (PID: %d, Command: %s)\n", data.PID, data.Command)
