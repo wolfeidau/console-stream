@@ -17,7 +17,6 @@ import (
 	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/client"
 	"github.com/docker/docker/pkg/stdcopy"
-	"go.opentelemetry.io/otel/metric"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -69,19 +68,17 @@ func NewContainerProcess(cmd string, args []string, opts ...ContainerProcessOpti
 
 	// Initialize stats if meter provided (graceful degradation)
 	if cfg.meter != nil {
-		if meter, ok := cfg.meter.(metric.Meter); ok {
-			processInfo := ProcessInfo{
-				Command: cmd,
-				Args:    args,
-				// PID will be set later when container starts
-			}
-
-			stats, err := NewProcessStats(meter, cfg.metricsInterval, processInfo)
-			if err == nil {
-				process.stats = stats
-			}
-			// If err != nil, we simply continue without stats (graceful degradation)
+		processInfo := ProcessInfo{
+			Command: cmd,
+			Args:    args,
+			// PID will be set later when container starts
 		}
+
+		stats, err := NewProcessStats(cfg.meter, processInfo)
+		if err == nil {
+			process.stats = stats
+		}
+		// If err != nil, we simply continue without stats (graceful degradation)
 	}
 
 	return process

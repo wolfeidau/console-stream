@@ -43,6 +43,10 @@ build-examples: ## Build all examples
 	go build -o bin/examples/logging ./example/logging
 
 # Quality targets
+check: ## Run go vet and verify go.mod is tidy
+	go vet ./...
+	go mod tidy -diff
+
 quality: check lint test ## Run all quality checks
 
 # Clean targets

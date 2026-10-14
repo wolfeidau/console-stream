@@ -6,6 +6,9 @@ import (
 	"os"
 	"syscall"
 	"time"
+
+	"github.com/creack/pty"
+	"go.opentelemetry.io/otel/metric"
 )
 
 // ProcessOption represents a functional option for configuring processes
@@ -31,16 +34,16 @@ func (m ProcessMode) String() string {
 	}
 }
 
+// processConfig holds configuration options for processes
 type processConfig struct {
-	cancellor       Cancellor
-	env             []string
-	workingDir      string
-	mode            ProcessMode   // PTY or Pipe mode
-	ptySize         any           // Uses any to avoid dependency on pty package
-	flushInterval   time.Duration // How often to flush buffers
-	maxBufferSize   int           // Maximum buffer size before forced flush
-	meter           any           // OpenTelemetry meter (uses any to avoid dependency)
-	metricsInterval time.Duration // How often to aggregate metrics buckets
+	cancellor     Cancellor
+	env           []string
+	workingDir    string
+	mode          ProcessMode   // PTY or Pipe mode
+	ptySize       *pty.Winsize  // Terminal size for PTY mode
+	flushInterval time.Duration // How often to flush buffers
+	maxBufferSize int           // Maximum buffer size before forced flush
+	meter         metric.Meter  // OpenTelemetry meter
 }
 
 // applyDefaults sets sensible defaults for the process configuration
@@ -48,18 +51,11 @@ func (cfg *processConfig) applyDefaults() {
 	if cfg.cancellor == nil {
 		cfg.cancellor = NewLocalCancellor(5 * time.Second)
 	}
-	// Default to pipe mode for backward compatibility
-	if cfg.mode == 0 {
-		cfg.mode = PipeMode
-	}
 	if cfg.flushInterval == 0 {
 		cfg.flushInterval = time.Second // Default 1-second flush interval
 	}
 	if cfg.maxBufferSize == 0 {
 		cfg.maxBufferSize = 10 * 1024 * 1024 // Default 10MB buffer limit (matches PipeProcess)
-	}
-	if cfg.metricsInterval == 0 {
-		cfg.metricsInterval = time.Second // Default 1-second metrics aggregation
 	}
 }
 
@@ -69,13 +65,12 @@ type ContainerProcessOption func(*containerProcessConfig)
 // containerProcessConfig holds configuration options for container processes
 type containerProcessConfig struct {
 	// Shared options
-	cancellor       Cancellor
-	env             []string
-	workingDir      string
-	flushInterval   time.Duration
-	maxBufferSize   int
-	meter           any
-	metricsInterval time.Duration
+	cancellor     Cancellor
+	env           []string
+	workingDir    string
+	flushInterval time.Duration
+	maxBufferSize int
+	meter         metric.Meter
 
 	// Container-specific options
 	image   string
@@ -96,9 +91,6 @@ func (cfg *containerProcessConfig) applyDefaults() {
 	}
 	if cfg.maxBufferSize == 0 {
 		cfg.maxBufferSize = 10 * 1024 * 1024 // Default 10MB buffer limit (matches PipeProcess)
-	}
-	if cfg.metricsInterval == 0 {
-		cfg.metricsInterval = time.Second // Default 1-second metrics aggregation
 	}
 }
 
@@ -154,16 +146,9 @@ func WithMaxBufferSize(size int) ProcessOption {
 }
 
 // WithMeter sets an OpenTelemetry meter for metrics collection
-func WithMeter(meter any) ProcessOption {
+func WithMeter(meter metric.Meter) ProcessOption {
 	return func(cfg *processConfig) {
 		cfg.meter = meter
-	}
-}
-
-// WithMetricsInterval sets how often to aggregate metrics into buckets
-func WithMetricsInterval(interval time.Duration) ProcessOption {
-	return func(cfg *processConfig) {
-		cfg.metricsInterval = interval
 	}
 }
 
@@ -454,24 +439,6 @@ func (e ProcessStartError) Error() string {
 	return fmt.Sprintf("failed to start process %s: %v", e.Cmd, e.Err)
 }
 
-type PipeProcessFailedError struct {
-	Cmd      string
-	ExitCode int
-}
-
-func (e PipeProcessFailedError) Error() string {
-	return fmt.Sprintf("process %s exited with code %d", e.Cmd, e.ExitCode)
-}
-
-type PipeProcessKilledError struct {
-	Cmd    string
-	Signal string
-}
-
-func (e PipeProcessKilledError) Error() string {
-	return fmt.Sprintf("process %s was killed by signal %s", e.Cmd, e.Signal)
-}
-
 // ContainerMount represents a volume mount for container processes
 type ContainerMount struct {
 	Source   string
@@ -599,15 +566,8 @@ func WithContainerMaxBufferSize(size int) ContainerProcessOption {
 }
 
 // WithContainerMeter sets an OpenTelemetry meter for metrics collection for container processes
-func WithContainerMeter(meter any) ContainerProcessOption {
+func WithContainerMeter(meter metric.Meter) ContainerProcessOption {
 	return func(cfg *containerProcessConfig) {
 		cfg.meter = meter
-	}
-}
-
-// WithContainerMetricsInterval sets how often to aggregate metrics into buckets for container processes
-func WithContainerMetricsInterval(interval time.Duration) ContainerProcessOption {
-	return func(cfg *containerProcessConfig) {
-		cfg.metricsInterval = interval
 	}
 }

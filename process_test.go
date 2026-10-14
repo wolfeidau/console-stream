@@ -136,7 +136,7 @@ func TestProcessWithPTYSize(t *testing.T) {
 	size := pty.Winsize{Rows: 24, Cols: 80}
 	process := NewProcess("bash", []string{"-c", "tput cols && tput lines"},
 		WithPTYMode(),
-		WithPTYSize(size),
+		WithPTYSize(&size),
 		WithEnvVar("TERM", "xterm"))
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -159,6 +159,27 @@ func TestProcessWithPTYSize(t *testing.T) {
 	outputStr := string(outputData)
 	require.Contains(t, outputStr, "80") // cols
 	require.Contains(t, outputStr, "24") // rows
+}
+
+func TestProcessPTYSizeApplied(t *testing.T) {
+	t.Parallel()
+
+	process := NewProcess("stty", []string{"size"},
+		WithPTYMode(),
+		WithPTYSize(&pty.Winsize{Rows: 40, Cols: 132}))
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	var outputData []byte
+	for part, err := range process.ExecuteAndStream(ctx) {
+		require.NoError(t, err)
+
+		if part.EventType() == OutputEvent {
+			outputData = append(outputData, part.Event.(*OutputData).Data...)
+		}
+	}
+
+	require.Contains(t, string(outputData), "40 132")
 }
 
 func TestProcessExecuteAndStreamExitCode(t *testing.T) {

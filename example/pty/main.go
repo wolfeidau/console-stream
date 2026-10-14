@@ -51,7 +51,7 @@ func main() {
 
 	// Create a PTY process with specific terminal size
 	size := pty.Winsize{Rows: 24, Cols: 80}
-	process2 := consolestream.NewProcess("bash", []string{"-c", "echo 'Terminal size: '$(tput cols)'x'$(tput lines)"}, consolestream.WithCancellor(cancellor), consolestream.WithPTYSize(size))
+	process2 := consolestream.NewProcess("bash", []string{"-c", "echo 'Terminal size: '$(tput cols)'x'$(tput lines)"}, consolestream.WithCancellor(cancellor), consolestream.WithPTYSize(&size))
 
 	for part, err := range process2.ExecuteAndStream(ctx) {
 		if err != nil {

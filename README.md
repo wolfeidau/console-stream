@@ -59,7 +59,7 @@ process := consolestream.NewProcess("bash", []string{"-l"},
 // With configuration options
 process := consolestream.NewProcess("npm", []string{"install"},
     consolestream.WithPTYMode(),
-    consolestream.WithPTYSize(pty.Winsize{Rows: 24, Cols: 80}),
+    consolestream.WithPTYSize(&pty.Winsize{Rows: 24, Cols: 80}),
     consolestream.WithEnvVar("NODE_ENV", "production"),
     consolestream.WithFlushInterval(500*time.Millisecond))
 ```
