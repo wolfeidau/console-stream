@@ -348,7 +348,7 @@ func executeProcess(ctx context.Context, config *Config, format string, enableMe
 			if cols < 0 || cols > 65535 {
 				return nil, nil, fmt.Errorf("invalid PTY cols %d, must be 0-65535", cols)
 			}
-			opts = append(opts, consolestream.WithPTYSize(pty.Winsize{
+			opts = append(opts, consolestream.WithPTYSize(&pty.Winsize{
 				Rows: uint16(rows), //nolint:gosec // Range validated above
 				Cols: uint16(cols), //nolint:gosec // Range validated above
 			}))

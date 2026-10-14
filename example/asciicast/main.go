@@ -24,7 +24,7 @@ func main() {
 	process := consolestream.NewProcess("echo", []string{"Hello from asciicast!"},
 		consolestream.WithCancellor(cancellor),
 		consolestream.WithPTYMode(),
-		consolestream.WithPTYSize(size))
+		consolestream.WithPTYSize(&size))
 
 	// Execute and get events
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -93,7 +93,7 @@ echo -e "\033[32mStarting colored demo...\033[0m"
 echo -e "\033[34mThis is blue text\033[0m"
 echo -e "\033[31mThis is red text\033[0m"
 echo -e "\033[33mDemo completed!\033[0m"
-`}, consolestream.WithCancellor(cancellor), consolestream.WithPTYSize(size))
+`}, consolestream.WithCancellor(cancellor), consolestream.WithPTYSize(&size))
 
 	events2 := process2.ExecuteAndStream(ctx)
 
@@ -133,7 +133,7 @@ echo -e "\033[33mDemo completed!\033[0m"
 	smallSize := pty.Winsize{Rows: 20, Cols: 60}
 	process3 := consolestream.NewProcess("bash", []string{"-c", "tput cols && tput lines && echo 'Terminal info displayed'"},
 		consolestream.WithCancellor(cancellor),
-		consolestream.WithPTYSize(smallSize))
+		consolestream.WithPTYSize(&smallSize))
 
 	events3 := process3.ExecuteAndStream(ctx)
 

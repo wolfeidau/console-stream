@@ -12,6 +12,24 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// requireDocker skips the test when no container daemon is reachable.
+func requireDocker(t *testing.T) {
+	t.Helper()
+
+	cli, err := initDockerClient("docker")
+	if err != nil {
+		t.Skipf("Docker unavailable: %v", err)
+	}
+	defer cli.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	if _, err := cli.Ping(ctx); err != nil {
+		t.Skipf("Docker daemon unreachable: %v", err)
+	}
+}
+
 func TestNewContainerProcess(t *testing.T) {
 	tests := []struct {
 		name string
@@ -65,6 +83,8 @@ func TestContainerProcessExecuteAndStream(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping container test in short mode (requires Docker)")
 	}
+
+	requireDocker(t)
 
 	t.Parallel()
 
@@ -121,6 +141,8 @@ func TestContainerProcessWithMount(t *testing.T) {
 		t.Skip("Skipping container test in short mode")
 	}
 
+	requireDocker(t)
+
 	// t.Parallel()
 
 	// Create temp file to mount
@@ -166,6 +188,8 @@ func TestContainerProcessExitCode(t *testing.T) {
 		t.Skip("Skipping container test in short mode")
 	}
 
+	requireDocker(t)
+
 	t.Parallel()
 
 	process := NewContainerProcess("sh", []string{"-c", "exit 42"},
@@ -192,6 +216,8 @@ func TestContainerProcessCancellation(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping container test in short mode")
 	}
+
+	requireDocker(t)
 
 	t.Parallel()
 
@@ -242,6 +268,8 @@ func TestContainerProcessWithEnvVars(t *testing.T) {
 		t.Skip("Skipping container test in short mode")
 	}
 
+	requireDocker(t)
+
 	t.Parallel()
 
 	process := NewContainerProcess("sh", []string{"-c", "echo $TEST_VAR"},
@@ -275,6 +303,8 @@ func TestContainerProcessWithWorkingDir(t *testing.T) {
 		t.Skip("Skipping container test in short mode")
 	}
 
+	requireDocker(t)
+
 	t.Parallel()
 
 	process := NewContainerProcess("pwd", []string{},
@@ -305,6 +335,8 @@ func TestContainerProcessEventOrder(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping container test in short mode")
 	}
+
+	requireDocker(t)
 
 	t.Parallel()
 
@@ -346,6 +378,8 @@ func TestContainerProcessConcurrent(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping container test in short mode")
 	}
+
+	requireDocker(t)
 
 	t.Parallel()
 
@@ -453,6 +487,8 @@ func TestContainerProcessImagePull(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping container test in short mode")
 	}
+
+	requireDocker(t)
 
 	t.Parallel()
 

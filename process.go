@@ -31,9 +31,6 @@ type ProcessStatsSnapshot struct {
 	ErrorCount int
 	ExitCode   *int
 	Duration   time.Duration
-
-	// Metrics collection interval
-	metricsInterval time.Duration
 }
 
 // ProcessStats manages comprehensive metrics during process execution
@@ -47,13 +44,11 @@ type ProcessStats struct {
 
 	// OpenTelemetry metrics instruments
 	outputBytesHistogram metric.Int64Histogram
-	inputBytesHistogram  metric.Int64Histogram
 	eventCounter         metric.Int64Counter
 	processStatusGauge   metric.Int64Gauge
 
 	// Configuration
-	metricsInterval time.Duration
-	processInfo     ProcessInfo
+	processInfo ProcessInfo
 
 	// Thread safety
 	mutex sync.RWMutex
@@ -76,7 +71,7 @@ func (t *TerminalResizeEvent) String() string {
 }
 
 // WithPTYSize sets a custom terminal size for PTY processes
-func WithPTYSize(size any) ProcessOption {
+func WithPTYSize(size *pty.Winsize) ProcessOption {
 	return func(cfg *processConfig) {
 		cfg.ptySize = size
 	}
@@ -118,13 +113,6 @@ func NewProcess(cmd string, args []string, opts ...ProcessOption) *Process {
 		opt(cfg)
 	}
 
-	var ptySize *pty.Winsize
-	if cfg.ptySize != nil {
-		if size, ok := cfg.ptySize.(*pty.Winsize); ok {
-			ptySize = size
-		}
-	}
-
 	process := &Process{
 		cmd:           cmd,
 		args:          args,
@@ -132,26 +120,24 @@ func NewProcess(cmd string, args []string, opts ...ProcessOption) *Process {
 		cancellor:     cfg.cancellor,
 		env:           cfg.env,
 		workingDir:    cfg.workingDir,
-		ptySize:       ptySize,
+		ptySize:       cfg.ptySize,
 		flushInterval: cfg.flushInterval,
 		maxBufferSize: cfg.maxBufferSize,
 	}
 
 	// Initialize stats if meter is provided
 	if cfg.meter != nil {
-		if meter, ok := cfg.meter.(metric.Meter); ok {
-			processInfo := ProcessInfo{
-				Command: cmd,
-				Args:    args,
-				// PID will be set later when process starts
-			}
-
-			stats, err := NewProcessStats(meter, cfg.metricsInterval, processInfo)
-			if err == nil {
-				process.stats = stats
-			}
-			// If err != nil, we simply continue without stats (graceful degradation)
+		processInfo := ProcessInfo{
+			Command: cmd,
+			Args:    args,
+			// PID will be set later when process starts
 		}
+
+		stats, err := NewProcessStats(cfg.meter, processInfo)
+		if err == nil {
+			process.stats = stats
+		}
+		// If err != nil, we simply continue without stats (graceful degradation)
 	}
 
 	return process
@@ -719,14 +705,13 @@ func (p *Process) GetStats() ProcessStatsSnapshot {
 }
 
 // NewProcessStats creates a new ProcessStats instance with OpenTelemetry metrics
-func NewProcessStats(meter metric.Meter, interval time.Duration, processInfo ProcessInfo) (*ProcessStats, error) {
+func NewProcessStats(meter metric.Meter, processInfo ProcessInfo) (*ProcessStats, error) {
 	if meter == nil {
 		return nil, fmt.Errorf("meter cannot be nil")
 	}
 
 	stats := &ProcessStats{
-		metricsInterval: interval,
-		processInfo:     processInfo,
+		processInfo: processInfo,
 	}
 
 	var err error
@@ -739,16 +724,6 @@ func NewProcessStats(meter metric.Meter, interval time.Duration, processInfo Pro
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create output bytes histogram: %w", err)
-	}
-
-	// Create histogram for input bytes per flush interval (for future use)
-	stats.inputBytesHistogram, err = meter.Int64Histogram(
-		"process.input.bytes",
-		metric.WithDescription("Bytes input to process per flush interval"),
-		metric.WithUnit("bytes"),
-	)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create input bytes histogram: %w", err)
 	}
 
 	// Create counter for total events
@@ -885,12 +860,11 @@ func (s *ProcessStats) GetSnapshot() ProcessStatsSnapshot {
 
 	// Create a deep copy to avoid race conditions
 	snapshot := ProcessStatsSnapshot{
-		StartTime:       s.startTime,
-		EventCount:      s.eventCount,
-		ErrorCount:      s.errorCount,
-		ExitCode:        s.exitCode,
-		Duration:        s.duration,
-		metricsInterval: s.metricsInterval,
+		StartTime:  s.startTime,
+		EventCount: s.eventCount,
+		ErrorCount: s.errorCount,
+		ExitCode:   s.exitCode,
+		Duration:   s.duration,
 	}
 
 	return snapshot

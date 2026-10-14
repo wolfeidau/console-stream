@@ -260,7 +260,7 @@ func WithContainerEnvMap(envMap map[string]string) ContainerProcessOption
 func WithContainerWorkingDir(dir string) ContainerProcessOption
 func WithContainerFlushInterval(interval time.Duration) ContainerProcessOption
 func WithContainerMaxBufferSize(size int) ContainerProcessOption
-func WithContainerMeter(meter any) ContainerProcessOption
+func WithContainerMeter(meter metric.Meter) ContainerProcessOption
 ```
 
 ### Error Types
