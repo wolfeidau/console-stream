@@ -93,7 +93,10 @@ type Process struct {
 	stats *ProcessStats
 }
 
-// NewProcess creates a new unified process with functional options
+// NewProcess creates a new unified process with functional options.
+// Children run in their own process group (pipe: Setpgid, PTY: Setsid) and so
+// do not receive terminal-generated signals; cancel the ExecuteAndStream
+// context on SIGINT/SIGTERM (e.g. signal.NotifyContext) to stop them.
 func NewProcess(cmd string, args []string, opts ...ProcessOption) *Process {
 	cfg := &processConfig{}
 	cfg.applyDefaults()
@@ -133,6 +136,12 @@ func NewProcess(cmd string, args []string, opts ...ProcessOption) *Process {
 }
 
 // ExecuteAndStream starts a process and returns an iterator over Event objects.
+//
+// The child runs in its own process group (pipe mode: Setpgid; PTY mode:
+// Setsid), so it does not receive terminal-generated signals such as Ctrl-C.
+// Callers should cancel ctx on SIGINT/SIGTERM (e.g. signal.NotifyContext) so
+// the Cancellor can stop the child and its descendants.
+//
 // Breaking out of the loop or cancelling ctx stops the child via the Cancellor
 // and waits for all goroutines to finish before the iterator returns.
 func (p *Process) ExecuteAndStream(ctx context.Context) iter.Seq2[Event, error] {

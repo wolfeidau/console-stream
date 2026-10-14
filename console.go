@@ -453,6 +453,10 @@ type ContainerMount struct {
 // started by this library are group leaders (Setpgid for pipes, Setsid for
 // PTYs). If pid is not a group leader, Cancel falls back to signalling pid
 // alone.
+//
+// Limitation: PTY children that create their own job-control process groups
+// (for example interactive shells) have descendants outside the group, which
+// the group kill does not reach.
 type LocalCancellor struct {
 	terminateTimeout time.Duration
 }
