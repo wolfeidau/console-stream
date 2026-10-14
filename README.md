@@ -75,8 +75,8 @@ process := consolestream.NewProcess("npm", []string{"install"},
 | `WithCancellor(c)` | Custom cancellation (default: `NewLocalCancellor(5s)`) |
 | `WithEnv([]string)` / `WithEnvVar(k, v)` / `WithEnvMap(m)` | Environment variables |
 | `WithWorkingDir(dir)` | Working directory |
-| `WithFlushInterval(d)` | Output flush interval (default 1s) |
-| `WithMaxBufferSize(n)` | Flush when buffer reaches n bytes (default 10MB) |
+| `WithFlushInterval(d)` | Output batch interval (default 1s): bounds live latency and event volume; also sets heartbeat cadence |
+| `WithMaxBufferSize(n)` | Deliver a batch early when it reaches n bytes (default 10MB) |
 | `WithMeter(metric.Meter)` | OpenTelemetry metrics |
 
 ## Container Execution
@@ -122,8 +122,8 @@ Event order: `ContainerCreate → ProcessStart → OutputData/HeartbeatEvent →
 | `WithContainerMount(src, dst, ro)` | Volume mount |
 | `WithContainerWorkingDir(d)` | Working directory in container |
 | `WithContainerEnv([]string)` / `WithContainerEnvMap(m)` | Environment variables |
-| `WithContainerFlushInterval(d)` | Output flush interval |
-| `WithContainerMaxBufferSize(n)` | Buffer size limit |
+| `WithContainerFlushInterval(d)` | Output batch interval (default 1s) |
+| `WithContainerMaxBufferSize(n)` | Maximum batch size (default 10MB) |
 | `WithContainerMeter(metric.Meter)` | OpenTelemetry metrics |
 
 ## Asciicast Recording
@@ -155,7 +155,7 @@ err = consolestream.WriteAscicastV3(process.ExecuteAndStream(ctx), metadata, fun
 
 `ToAscicastV3` maps each event type to a line: output to `"o"`, `TerminalResizeEvent` to `"r"`, and process end to `"x"`. The library does not emit resize events itself (PTY size is fixed by `WithPTYSize`); callers wrapping the event stream may inject them.
 
-Recordings use per-read timestamps from `OutputData.Segments`, so the flush interval only affects delivery latency, not playback timing. Always record with `WithPTYMode()`.
+Recordings use per-read timestamps from `OutputData.Segments`, so the batch interval (`WithFlushInterval`) does not affect playback timing; there is no need to lower it for recordings. Always record with `WithPTYMode()`.
 
 `timestamp` defaults to the recording start time (Unix seconds) when unset. `TermInfo` accepts optional `Type`, `Version` and `Theme` (`*TermTheme`); event intervals are rounded to microseconds.
 
@@ -174,7 +174,9 @@ Recordings use per-read timestamps from `OutputData.Segments`, so the flush inte
 
 ## Streaming Behaviour
 
-- Output is flushed every flush interval (default 1s) or when the buffer reaches the max size (default 10MB), and once more on exit.
+- Output is delivered in batches: one `OutputData` event per batch interval (`WithFlushInterval`, default 1s), earlier if the buffer reaches the max size (default 10MB), and a final batch on exit.
+- The batch interval trades live latency for event volume. It does not affect timing accuracy: `OutputData.Segments` records when each chunk was read.
+- A `HeartbeatEvent` fires after two consecutive batch intervals with no output, so a short interval also means frequent heartbeats.
 - Pipe mode is not line-buffered: events can split mid-line. Reassemble lines in the consumer if needed.
 - Stdout and stderr share one pipe, so their relative order is preserved but they cannot be distinguished.
 

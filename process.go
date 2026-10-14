@@ -301,10 +301,10 @@ func NewProcessStats(meter metric.Meter, processInfo ProcessInfo) (*ProcessStats
 
 	var err error
 
-	// Create histogram for output bytes per flush interval
+	// Create histogram for output bytes per OutputData batch
 	stats.outputBytesHistogram, err = meter.Int64Histogram(
 		"process.output.bytes",
-		metric.WithDescription("Bytes output from process per flush interval"),
+		metric.WithDescription("Bytes output from process per OutputData batch"),
 		metric.WithUnit("bytes"),
 	)
 	if err != nil {
