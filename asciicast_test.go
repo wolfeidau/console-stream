@@ -591,6 +591,63 @@ func TestToAscicastV3SplitUTF8(t *testing.T) {
 	})
 }
 
+func TestAscicastV3HeaderFormat(t *testing.T) {
+	t.Parallel()
+
+	header := AscicastV3Header{
+		Version: 3,
+		AscicastV3Metadata: AscicastV3Metadata{
+			Term: TermInfo{
+				Cols: 80, Rows: 24, Type: "xterm-256color", Version: "1.0",
+				Theme: &TermTheme{Fg: "#ffffff", Bg: "#000000", Palette: "#000000:#ff0000"},
+			},
+			Command: "ls",
+		},
+	}
+
+	data, err := json.Marshal(header)
+	require.NoError(t, err)
+	require.True(t, strings.HasPrefix(string(data), `{"version":3,"term":`))
+
+	var got AscicastV3Header
+	require.NoError(t, json.Unmarshal(data, &got))
+	require.Equal(t, header, got)
+}
+
+func TestToAscicastV3HeaderTimestamp(t *testing.T) {
+	t.Parallel()
+
+	firstHeader := func(t *testing.T, md AscicastV3Metadata) AscicastV3Header {
+		t.Helper()
+		empty := func(yield func(Event, error) bool) {}
+		lines := collectAscicastLines(ToAscicastV3(empty, md))
+		require.NotEmpty(t, lines)
+		h, ok := lines[0].(AscicastV3Header)
+		require.True(t, ok)
+		return h
+	}
+
+	t.Run("defaults to now", func(t *testing.T) {
+		h := firstHeader(t, AscicastV3Metadata{Term: TermInfo{Cols: 80, Rows: 24}})
+		require.NotNil(t, h.Timestamp)
+		require.InDelta(t, time.Now().Unix(), *h.Timestamp, 5)
+	})
+
+	t.Run("keeps caller timestamp", func(t *testing.T) {
+		ts := int64(1704110400)
+		h := firstHeader(t, AscicastV3Metadata{Term: TermInfo{Cols: 80, Rows: 24}, Timestamp: &ts})
+		require.Equal(t, ts, *h.Timestamp)
+	})
+}
+
+func TestAscicastV3IntervalRounding(t *testing.T) {
+	t.Parallel()
+
+	data, err := json.Marshal(NewOutputEvent(1.0011960419, "x"))
+	require.NoError(t, err)
+	require.Equal(t, `[1.001196,"o","x"]`, string(data))
+}
+
 // Helper function to collect asciicast lines from iterator
 func collectAscicastLines(seq iter.Seq2[AscicastV3Line, error]) []AscicastV3Line {
 	var lines []AscicastV3Line

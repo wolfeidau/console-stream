@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"iter"
-	"maps"
+	"math"
 	"strconv"
 	"time"
 	"unicode/utf8"
@@ -17,8 +17,19 @@ type AscicastV3Line interface {
 
 // TermInfo represents terminal dimensions for asciicast header
 type TermInfo struct {
-	Cols int `json:"cols"`
-	Rows int `json:"rows"`
+	Cols    int        `json:"cols"`
+	Rows    int        `json:"rows"`
+	Type    string     `json:"type,omitempty"`
+	Version string     `json:"version,omitempty"`
+	Theme   *TermTheme `json:"theme,omitempty"`
+}
+
+// TermTheme describes terminal colours. Palette is a colon-separated list of
+// hex colours, as asciinema writes it.
+type TermTheme struct {
+	Fg      string `json:"fg"`
+	Bg      string `json:"bg"`
+	Palette string `json:"palette"`
 }
 
 // AscicastV3Metadata contains the metadata for the asciicast header
@@ -39,26 +50,9 @@ type AscicastV3Header struct {
 
 // MarshalJSON implements AscicastV3Line interface for headers
 func (h AscicastV3Header) MarshalJSON() ([]byte, error) {
-	// Create a map to merge version with metadata
-	result := make(map[string]any)
-	result["version"] = h.Version
-
-	// Marshal metadata to get its fields
-	metadataBytes, err := json.Marshal(h.AscicastV3Metadata)
-	if err != nil {
-		return nil, err
-	}
-
-	// Unmarshal into map to merge with version
-	var metadataMap map[string]any
-	if err := json.Unmarshal(metadataBytes, &metadataMap); err != nil {
-		return nil, err
-	}
-
-	// Merge maps
-	maps.Copy(result, metadataMap)
-
-	return json.Marshal(result)
+	// The alias drops MarshalJSON to avoid recursion; struct field order is preserved.
+	type alias AscicastV3Header
+	return json.Marshal(alias(h))
 }
 
 // AscicastV3Event represents an event line in asciicast v3 format: [interval, code, data]
@@ -69,33 +63,44 @@ func (e AscicastV3Event) MarshalJSON() ([]byte, error) {
 	return json.Marshal([3]any(e))
 }
 
+// roundInterval rounds seconds to microsecond precision.
+func roundInterval(s float64) float64 { return math.Round(s*1e6) / 1e6 }
+
 // NewOutputEvent creates an asciicast output event
 func NewOutputEvent(interval float64, data string) AscicastV3Event {
-	return AscicastV3Event{interval, "o", data}
+	return AscicastV3Event{roundInterval(interval), "o", data}
 }
 
 // NewResizeEvent creates an asciicast resize event
 func NewResizeEvent(interval float64, cols, rows uint16) AscicastV3Event {
-	return AscicastV3Event{interval, "r", fmt.Sprintf("%d %d", cols, rows)}
+	return AscicastV3Event{roundInterval(interval), "r", fmt.Sprintf("%d %d", cols, rows)}
 }
 
 // NewExitEvent creates an asciicast exit event
 func NewExitEvent(interval float64, exitCode int) AscicastV3Event {
-	return AscicastV3Event{interval, "x", strconv.Itoa(exitCode)}
+	return AscicastV3Event{roundInterval(interval), "x", strconv.Itoa(exitCode)}
 }
 
 // NewMarkerEvent creates an asciicast marker event
 func NewMarkerEvent(interval float64, label string) AscicastV3Event {
-	return AscicastV3Event{interval, "m", label}
+	return AscicastV3Event{roundInterval(interval), "m", label}
 }
 
 // ToAscicastV3 transforms a stream of console-stream events into asciicast v3 format
 func ToAscicastV3(events iter.Seq2[Event, error], metadata AscicastV3Metadata) iter.Seq2[AscicastV3Line, error] {
 	return func(yield func(AscicastV3Line, error) bool) {
+		// Default the timestamp to the recording start time; copy so each
+		// iteration of the sequence gets its own.
+		md := metadata
+		if md.Timestamp == nil {
+			now := time.Now().Unix()
+			md.Timestamp = &now
+		}
+
 		// Emit header first
 		header := AscicastV3Header{
 			Version:            3,
-			AscicastV3Metadata: metadata,
+			AscicastV3Metadata: md,
 		}
 		if !yield(header, nil) {
 			return

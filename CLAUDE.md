@@ -232,6 +232,7 @@ func NewMarkerEvent(interval float64, label string) AscicastV3Event
 
 Output is grouped per flush interval (default 1s), so animations and progress bars play back in 1s steps. Use `WithFlushInterval(50*time.Millisecond)` when recording for finer timing. Always record with `WithPTYMode()`.
 
+`timestamp` defaults to the recording start time (Unix seconds) when unset. `TermInfo` accepts optional `Type`, `Version` and `Theme` (`*TermTheme`); event intervals are rounded to microseconds.
 
 ### Errors
 
