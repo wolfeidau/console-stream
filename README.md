@@ -155,7 +155,7 @@ err = consolestream.WriteAscicastV3(process.ExecuteAndStream(ctx), metadata, fun
 
 `ToAscicastV3` maps each event type to a line: output to `"o"`, `TerminalResizeEvent` to `"r"`, and process end to `"x"`. The library does not emit resize events itself (PTY size is fixed by `WithPTYSize`); callers wrapping the event stream may inject them.
 
-Output is grouped per flush interval (default 1s), so animations and progress bars play back in 1s steps. Use `WithFlushInterval(50*time.Millisecond)` when recording for finer timing. Always record with `WithPTYMode()`.
+Recordings use per-read timestamps from `OutputData.Segments`, so the flush interval only affects delivery latency, not playback timing. Always record with `WithPTYMode()`.
 
 `timestamp` defaults to the recording start time (Unix seconds) when unset. `TermInfo` accepts optional `Type`, `Version` and `Theme` (`*TermTheme`); event intervals are rounded to microseconds.
 
@@ -164,7 +164,7 @@ Output is grouped per flush interval (default 1s), so animations and progress ba
 | Event | Description |
 |-------|-------------|
 | `ProcessStart` | Process started (PID, command, args) |
-| `OutputData` | Output bytes; stdout and stderr are combined |
+| `OutputData` | Output bytes (stdout and stderr are combined); `Segments` carries per-read timing |
 | `HeartbeatEvent` | Process alive, no output in the last two ticks |
 | `ProcessEnd` | Exit code, duration, success. A non-zero exit is a `ProcessEnd`, not an error. A signal-terminated process reports `128 + signal` (137 for SIGKILL), matching shells and container mode |
 | `ProcessError` | Failure that is not a non-zero exit |

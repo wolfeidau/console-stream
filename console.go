@@ -232,6 +232,16 @@ func (e Event) String() string {
 // OutputData represents output data from the process (combined stdout/stderr)
 type OutputData struct {
 	Data []byte
+	// Segments carries per-read timing for Data; may be nil for events not
+	// produced by this library.
+	Segments []OutputSegment
+}
+
+// OutputSegment marks where a write into the output buffer began and when it was read.
+// Segment i covers Data[Offset_i:Offset_{i+1}] (the last runs to len(Data)).
+type OutputSegment struct {
+	Offset int
+	Time   time.Time
 }
 
 func (o *OutputData) Type() EventType {

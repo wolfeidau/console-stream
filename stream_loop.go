@@ -31,8 +31,8 @@ func streamOutput(
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
-	emit := func(data []byte) bool {
-		if !yield(newEvent(&OutputData{Data: data}), nil) {
+	emit := func(data []byte, segs []OutputSegment) bool {
+		if !yield(newEvent(&OutputData{Data: data, Segments: segs}), nil) {
 			return false
 		}
 		if stats != nil {
@@ -51,8 +51,8 @@ func streamOutput(
 
 		case <-ticker.C:
 			emitted := false
-			if data := w.FlushAndClear(); data != nil {
-				if !emit(data) {
+			if data, segs := w.FlushSegments(); data != nil {
+				if !emit(data, segs) {
 					return time.Time{}, false, nil
 				}
 				emitted = true
@@ -70,8 +70,8 @@ func streamOutput(
 
 		case <-flush:
 			if w.Len() >= maxBuf {
-				if data := w.FlushAndClear(); data != nil {
-					if !emit(data) {
+				if data, segs := w.FlushSegments(); data != nil {
+					if !emit(data, segs) {
 						return time.Time{}, false, nil
 					}
 					emittedLastTick = true
@@ -80,8 +80,8 @@ func streamOutput(
 
 		case err := <-done:
 			endTime := time.Now()
-			if data := w.FlushAndClear(); data != nil {
-				if !yield(Event{Timestamp: endTime, Event: &OutputData{Data: data}}, nil) {
+			if data, segs := w.FlushSegments(); data != nil {
+				if !yield(Event{Timestamp: endTime, Event: &OutputData{Data: data, Segments: segs}}, nil) {
 					return time.Time{}, false, nil
 				}
 				if stats != nil {

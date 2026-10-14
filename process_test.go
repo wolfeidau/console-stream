@@ -358,3 +358,22 @@ func TestProcessModeSelection(t *testing.T) {
 		})
 	}
 }
+
+func TestProcessPTYOutputSegmentTimes(t *testing.T) {
+	t.Parallel()
+
+	process := NewProcess("bash", []string{"-c", "printf a; sleep 0.3; printf b"}, WithPTYMode(), WithFlushInterval(100*time.Millisecond))
+
+	var times []time.Time
+	for event, err := range process.ExecuteAndStream(context.Background()) {
+		require.NoError(t, err)
+		if e, ok := event.Event.(*OutputData); ok {
+			for _, s := range e.Segments {
+				times = append(times, s.Time)
+			}
+		}
+	}
+
+	require.GreaterOrEqual(t, len(times), 2)
+	require.GreaterOrEqual(t, times[len(times)-1].Sub(times[0]), 200*time.Millisecond)
+}

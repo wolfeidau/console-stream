@@ -722,3 +722,61 @@ func eventSeq(events []Event) iter.Seq2[Event, error] {
 		}
 	}
 }
+
+func TestToAscicastV3Segments(t *testing.T) {
+	t.Parallel()
+
+	t0 := time.Date(2024, 1, 1, 12, 0, 0, 0, time.UTC)
+	run := func(evs ...Event) []AscicastV3Line {
+		return collectAscicastLines(ToAscicastV3(eventSeq(evs), AscicastV3Metadata{}))
+	}
+	decode := func(t *testing.T, l AscicastV3Line) (float64, string, string) {
+		b, err := l.MarshalJSON()
+		require.NoError(t, err)
+		var ev [3]any
+		require.NoError(t, json.Unmarshal(b, &ev))
+		return ev[0].(float64), ev[1].(string), ev[2].(string)
+	}
+
+	t.Run("one line per segment", func(t *testing.T) {
+		lines := run(
+			Event{Timestamp: t0, Event: &ProcessStart{}},
+			Event{Timestamp: t0.Add(2 * time.Second), Event: &OutputData{
+				Data: []byte("aabbc"),
+				Segments: []OutputSegment{
+					{Offset: 0, Time: t0.Add(1000 * time.Millisecond)},
+					{Offset: 2, Time: t0.Add(1200 * time.Millisecond)},
+					{Offset: 4, Time: t0.Add(1400 * time.Millisecond)},
+				},
+			}},
+		)
+		require.Len(t, lines, 4)
+		want := []struct {
+			iv float64
+			s  string
+		}{{1.0, "aa"}, {0.2, "bb"}, {0.2, "c"}}
+		for i, w := range want {
+			iv, kind, s := decode(t, lines[i+1])
+			require.Equal(t, "o", kind)
+			require.InDelta(t, w.iv, iv, 1e-9)
+			require.Equal(t, w.s, s)
+		}
+	})
+
+	t.Run("rune split across segments is intact", func(t *testing.T) {
+		lines := run(
+			Event{Timestamp: t0, Event: &ProcessStart{}},
+			Event{Timestamp: t0.Add(time.Second), Event: &OutputData{
+				Data: []byte("\xc3\xa9"),
+				Segments: []OutputSegment{
+					{Offset: 0, Time: t0.Add(100 * time.Millisecond)},
+					{Offset: 1, Time: t0.Add(200 * time.Millisecond)},
+				},
+			}},
+		)
+		require.Len(t, lines, 2)
+		iv, _, s := decode(t, lines[1])
+		require.Equal(t, "é", s)
+		require.InDelta(t, 0.2, iv, 1e-9)
+	})
+}
