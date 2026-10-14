@@ -222,7 +222,9 @@ func TestContainerProcessCancellation(t *testing.T) {
 
 	t.Parallel()
 
-	process := NewContainerProcess("sleep", []string{"30"},
+	// PID 1 ignores SIGTERM unless it installs a handler; trap it so the test
+	// measures cancellation, not the ContainerStop grace period before SIGKILL.
+	process := NewContainerProcess("sh", []string{"-c", `trap "exit 143" TERM; sleep 30 & wait`},
 		WithContainerImage("alpine:latest"))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
