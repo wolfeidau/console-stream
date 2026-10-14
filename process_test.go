@@ -2,6 +2,7 @@ package consolestream
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -520,4 +521,75 @@ func TestProcessProgramStatusOffByDefault(t *testing.T) {
 		}
 	}
 	require.Equal(t, statusStream, string(all))
+}
+
+const queryScript = `stty -echo -icanon; printf '\033]7501;?\033\\'; IFS= read -r -s -t 2 -d '\' reply; case "$reply" in *"7501;?:states="*) echo RESULT:supported;; *) echo RESULT:unsupported;; esac`
+
+func outputOf(events []Event) string {
+	var all []byte
+	for _, e := range events {
+		if o, ok := e.Event.(*OutputData); ok {
+			all = append(all, o.Data...)
+		}
+	}
+	return string(all)
+}
+
+func TestProcessProgramStatusQueryReply(t *testing.T) {
+	t.Parallel()
+
+	t.Run("enabled", func(t *testing.T) {
+		t.Parallel()
+		p := NewProcess("bash", []string{"-c", queryScript}, WithPTYMode(), WithProgramStatus())
+		out := outputOf(collectEvents(t, p))
+		require.Contains(t, out, "RESULT:supported")
+		require.NotContains(t, out, "RESULT:unsupported")
+	})
+
+	t.Run("disabled", func(t *testing.T) {
+		t.Parallel()
+		p := NewProcess("bash", []string{"-c", queryScript}, WithPTYMode())
+		require.Contains(t, outputOf(collectEvents(t, p)), "RESULT:unsupported")
+	})
+}
+
+func TestProcessProgramStatusQueryEcho(t *testing.T) {
+	t.Parallel()
+
+	// Default cooked mode echoes the reply; it must not trigger another reply.
+	p := NewProcess("bash", []string{"-c", `printf '\033]7501;?\033\\'; sleep 1`}, WithPTYMode(), WithProgramStatus())
+	out := outputOf(collectEvents(t, p))
+	require.LessOrEqual(t, strings.Count(out, "states=idle"), 1)
+	require.Less(t, len(out), 1024)
+}
+
+func TestProcessProgramStatusQueryPipeMode(t *testing.T) {
+	t.Parallel()
+
+	p := NewProcess("bash", []string{"-c", `printf '\033]7501;?\033\\'; echo done`}, WithPipeMode(), WithProgramStatus())
+	events := collectEvents(t, p)
+	require.Contains(t, outputOf(events), "done")
+	end, ok := events[len(events)-1].Event.(*ProcessEnd)
+	require.True(t, ok)
+	require.Equal(t, 0, end.ExitCode)
+}
+
+func TestProcessProgramStatusQueryFlood(t *testing.T) {
+	t.Parallel()
+
+	// The child never reads stdin; replies must not block draining or exit.
+	script := `for i in $(seq 50); do printf '\033]7501;?\033\\'; done`
+	p := NewProcess("bash", []string{"-c", script}, WithPTYMode(), WithProgramStatus())
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	var end *ProcessEnd
+	for event, err := range p.ExecuteAndStream(ctx) {
+		require.NoError(t, err)
+		if e, ok := event.Event.(*ProcessEnd); ok {
+			end = e
+		}
+	}
+	require.NotNil(t, end)
+	require.Equal(t, 0, end.ExitCode)
 }

@@ -274,6 +274,7 @@ Programs can report what they are doing (working, blocked, done) with OSC 7501 e
 - Ordering: `ProgramStatus` is yielded after the `OutputData` holding all preceding bytes and before any following bytes. It is delivered promptly, not at the next batch tick.
 - `Event.Timestamp` is the time the report was read.
 - Lifetime: after `ProcessEnd` or `ProcessError`, `working` and `blocked` no longer apply. The library emits no synthetic events and keeps no record store; track state in the consumer.
+- Feature query: in PTY mode the library answers `OSC 7501;?` by writing a reply listing the default states and kinds to the child's stdin. Pipe and container modes have no stdin back-channel and cannot reply, so programs there should report without querying. `CSI c` (DA1) is not answered.
 - Only OSC framing is tracked; an `ESC ]` inside a DCS or APC string can be mis-framed.
 - Asciicast: a marker (`status: <state>[/<kind>][ <id>][ <progress>%][: <msg>]`) is written when `(id, state, kind)` changes for an ID. Progress-only and message-only changes write nothing, and the recording continues.
 

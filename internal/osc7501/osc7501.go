@@ -31,6 +31,11 @@ const (
 	maxMsgDec     = 2048
 )
 
+// QueryReply is the feature-detection reply. It lists the rev 0.4 default
+// states and kinds, so its body differs from the query: if the PTY echoes it
+// back, Scanner does not mistake it for a new query (no reply loop).
+const QueryReply = "\x1b]7501;?:states=idle,working,done,blocked,error:kinds=permission,question,auth\x1b\\"
+
 // Report is a decoded program status report.
 type Report struct {
 	State, ID, Kind, App, Title, Msg string // Title and Msg are decoded
