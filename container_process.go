@@ -4,8 +4,8 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"io"
 	"iter"
 	"os"
 	"path/filepath"
@@ -17,7 +17,6 @@ import (
 	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/client"
 	"github.com/docker/docker/pkg/stdcopy"
-	"golang.org/x/sync/errgroup"
 )
 
 // ContainerProcess represents a process running inside a container
@@ -34,14 +33,11 @@ type ContainerProcess struct {
 	workingDir string
 
 	// Shared config
-	cancellor     Cancellor
 	flushInterval time.Duration
 	maxBufferSize int
 
 	// State
-	pid         int
-	containerID string
-	stats       *ProcessStats
+	stats *ProcessStats
 }
 
 // NewContainerProcess creates a new container process with functional options
@@ -61,7 +57,6 @@ func NewContainerProcess(cmd string, args []string, opts ...ContainerProcessOpti
 		mounts:        cfg.mounts,
 		env:           cfg.env,
 		workingDir:    cfg.workingDir,
-		cancellor:     cfg.cancellor,
 		flushInterval: cfg.flushInterval,
 		maxBufferSize: cfg.maxBufferSize,
 	}
@@ -114,6 +109,9 @@ func (cp *ContainerProcess) ExecuteAndStream(ctx context.Context) iter.Seq2[Even
 			if cerrdefs.IsNotFound(err) {
 				// Pull the image with progress tracking
 				if pullErr := cp.pullImageWithProgress(ctx, dockerClient, yield); pullErr != nil {
+					if errors.Is(pullErr, errConsumerStopped) {
+						return
+					}
 					yield(newEvent(&ProcessError{
 						Error:   pullErr,
 						Message: "Failed to pull container image",
@@ -138,8 +136,6 @@ func (cp *ContainerProcess) ExecuteAndStream(ctx context.Context) iter.Seq2[Even
 				return
 			}
 		}
-		cp.containerID = containerID
-
 		// Ensure cleanup (silent failures per Drone pattern)
 		defer cp.removeContainer(context.Background(), dockerClient, containerID)
 
@@ -163,24 +159,79 @@ func (cp *ContainerProcess) ExecuteAndStream(ctx context.Context) iter.Seq2[Even
 
 		// 5. Initialize stats if metrics enabled
 		// Only inspect container for PID if we need it for metrics
+		pid := 0
 		if cp.stats != nil {
 			inspect, err := dockerClient.ContainerInspect(ctx, containerID)
 			if err == nil && inspect.State != nil {
-				cp.pid = inspect.State.Pid
-				cp.stats.processInfo.PID = cp.pid
+				pid = inspect.State.Pid
+				cp.stats.processInfo.PID = pid
 			}
 			cp.stats.Start(ctx)
+		}
+
+		// runCtx bounds the background Docker calls; cancelled on every return path.
+		runCtx, cancelRun := context.WithCancel(ctx)
+		defer cancelRun()
+
+		flush := make(chan struct{}, 1)
+		done := make(chan error, 1)
+		exited := make(chan struct{}) // closed once the wait result is sent
+		w := NewBufferWriter(flush, cp.maxBufferSize)
+
+		// Log goroutine: demultiplexes straight into the buffer; never yields.
+		logsDone := make(chan struct{})
+		var logErr error // written before logsDone is closed
+		go func() {
+			defer close(logsDone)
+			reader, err := dockerClient.ContainerLogs(runCtx, containerID, container.LogsOptions{
+				ShowStdout: true,
+				ShowStderr: true,
+				Follow:     true,
+			})
+			if err != nil {
+				logErr = err
+				return
+			}
+			defer reader.Close()
+			if _, err := stdcopy.StdCopy(w, w, reader); err != nil && runCtx.Err() == nil {
+				logErr = err
+			}
+		}()
+
+		// Waiter goroutine: reports the exit once all logs are in the buffer.
+		waitCh, errCh := dockerClient.ContainerWait(runCtx, containerID, container.WaitConditionNotRunning)
+		go func() {
+			defer close(exited)
+			var result error
+			select {
+			case res := <-waitCh:
+				<-logsDone
+				result = &containerExit{code: res.StatusCode, logErr: logErr}
+			case err := <-errCh:
+				<-logsDone
+				result = err
+			}
+			done <- result
+		}()
+
+		// stop terminates the container and drains the background goroutines.
+		stop := func() {
+			stopTimeout := 2
+			_ = dockerClient.ContainerStop(context.WithoutCancel(ctx), containerID, container.StopOptions{Timeout: &stopTimeout})
+			cancelRun()
+			<-exited
 		}
 
 		// 6. Emit ProcessStart event (reuse existing event type)
 		if !yield(Event{
 			Timestamp: processStart,
 			Event: &ProcessStart{
-				PID:     cp.pid,
+				PID:     pid,
 				Command: cp.cmd,
 				Args:    cp.args,
 			},
 		}, nil) {
+			stop()
 			return
 		}
 
@@ -188,48 +239,47 @@ func (cp *ContainerProcess) ExecuteAndStream(ctx context.Context) iter.Seq2[Even
 			cp.stats.RecordEvent(ctx, "process_start")
 		}
 
-		// 7. Stream logs in background
-		doneChan := make(chan error, 1)
-		go cp.streamContainerLogs(ctx, dockerClient, containerID, yield, processStart, doneChan)
-
-		// 8. Wait for container completion
-		waitChan, errChan := dockerClient.ContainerWait(ctx, containerID, container.WaitConditionNotRunning)
-
-		var exitCode int64
-		select {
-		case result := <-waitChan:
-			exitCode = result.StatusCode
-		case err := <-errChan:
-			yield(newEvent(&ProcessError{
-				Error:   err,
-				Message: "Container wait failed",
-			}), nil)
-			if cp.stats != nil {
-				cp.stats.RecordError(ctx, "container_wait_error")
-			}
+		// 7. Stream output until the container exits
+		endTime, ok, waitErr := streamOutput(ctx, yield, w, flush, done, processStart, cp.flushInterval, cp.maxBufferSize, cp.stats)
+		if !ok {
+			stop()
 			return
 		}
 
-		// Wait for log streaming to complete
-		// This always happens after container finishes (or context cancelled)
-		<-doneChan
-
-		// 9. Update metrics
-		endTime := time.Now()
-		duration := endTime.Sub(processStart)
-
-		if cp.stats != nil {
-			cp.stats.Stop(ctx)
-			cp.stats.SetExitCode(int(exitCode))
+		exit, isExit := waitErr.(*containerExit)
+		if !isExit {
+			if cp.stats != nil {
+				cp.stats.RecordError(ctx, "container_wait_error")
+			}
+			yield(Event{Timestamp: endTime, Event: &ProcessError{
+				Error:   waitErr,
+				Message: "Container wait failed",
+			}}, nil)
+			return
 		}
 
-		// 10. Emit ProcessEnd event
+		if exit.logErr != nil {
+			if !yield(Event{Timestamp: endTime, Event: &ProcessError{
+				Error:   exit.logErr,
+				Message: "Failed to stream container logs",
+			}}, nil) {
+				return
+			}
+		}
+
+		// 8. Update metrics
+		if cp.stats != nil {
+			cp.stats.Stop(ctx)
+			cp.stats.SetExitCode(int(exit.code))
+		}
+
+		// 9. Emit ProcessEnd event
 		if !yield(Event{
 			Timestamp: endTime,
 			Event: &ProcessEnd{
-				ExitCode: int(exitCode),
-				Duration: duration,
-				Success:  exitCode == 0,
+				ExitCode: int(exit.code),
+				Duration: endTime.Sub(processStart),
+				Success:  exit.code == 0,
 			},
 		}, nil) {
 			return
@@ -239,12 +289,20 @@ func (cp *ContainerProcess) ExecuteAndStream(ctx context.Context) iter.Seq2[Even
 			cp.stats.RecordEvent(ctx, "process_end")
 		}
 
-		// 11. Emit ContainerRemove event (cleanup completed)
+		// 10. Emit ContainerRemove event (cleanup completed)
 		yield(newEvent(&ContainerRemove{
 			ContainerID: containerID,
 		}), nil)
 	}
 }
+
+// containerExit carries the container exit status over the done channel.
+type containerExit struct {
+	code   int64
+	logErr error // log attach/stream failure, if any
+}
+
+func (e *containerExit) Error() string { return fmt.Sprintf("container exited with code %d", e.code) }
 
 // createContainer creates a Docker/Podman container with the configured settings
 func (cp *ContainerProcess) createContainer(ctx context.Context, dockerClient *client.Client) (string, error) {
@@ -294,150 +352,8 @@ func (cp *ContainerProcess) createContainer(ctx context.Context, dockerClient *c
 	return resp.ID, nil
 }
 
-// streamContainerLogs streams container logs to the yield function
-func (cp *ContainerProcess) streamContainerLogs(
-	ctx context.Context,
-	dockerClient *client.Client,
-	containerID string,
-	yield func(Event, error) bool,
-	startTime time.Time,
-	done chan<- error,
-) {
-	defer func() { done <- nil }()
-
-	// Get container logs with follow
-	logsOptions := container.LogsOptions{
-		ShowStdout: true,
-		ShowStderr: true,
-		Follow:     true,
-		Timestamps: false,
-	}
-
-	logsReader, err := dockerClient.ContainerLogs(ctx, containerID, logsOptions)
-	if err != nil {
-		yield(newEvent(&ProcessError{
-			Error:   err,
-			Message: "Failed to attach to container logs",
-		}), nil)
-		return
-	}
-	defer logsReader.Close()
-
-	// Use BufferWriter for consistent buffering with Process
-	flushChan := make(chan struct{}, 1)
-	bufferWriter := NewBufferWriter(flushChan, cp.maxBufferSize)
-
-	// Ticker for periodic flushing
-	ticker := time.NewTicker(cp.flushInterval)
-	defer ticker.Stop()
-
-	// Demultiplex Docker's multiplexed stream
-	// Docker uses 8-byte header: [STREAM_TYPE][0][0][0][SIZE1][SIZE2][SIZE3][SIZE4]
-	stdoutReader, stdoutWriter := io.Pipe()
-	stderrReader, stderrWriter := io.Pipe()
-
-	// Use errgroup to manage all copy goroutines
-	g := &errgroup.Group{}
-
-	// Start demuxing in background
-	g.Go(func() error {
-		defer stdoutWriter.Close()
-		defer stderrWriter.Close()
-		// Use Docker's stdcopy package for demultiplexing
-		_, err := stdcopy.StdCopy(stdoutWriter, stderrWriter, logsReader)
-		return err
-	})
-
-	// Read from both streams concurrently (not sequentially)
-	// Each stream copies to the buffer writer independently
-	g.Go(func() error {
-		_, err := io.Copy(bufferWriter, stdoutReader)
-		return err
-	})
-	g.Go(func() error {
-		_, err := io.Copy(bufferWriter, stderrReader)
-		return err
-	})
-
-	// Monitor when all io.Copy goroutines finish
-	copyDone := make(chan error, 1)
-	go func() {
-		copyDone <- g.Wait()
-	}()
-
-	// Heartbeat tracking
-	var hasEmittedEventsThisSecond bool
-
-	// Main flushing loop (same pattern as Process)
-	for {
-		select {
-		case <-ctx.Done():
-			// Context cancelled - final flush before returning
-			if data := bufferWriter.FlushAndClear(); data != nil {
-				yield(newEvent(&OutputData{
-					Data: data,
-				}), nil)
-			}
-			return
-
-		case <-copyDone:
-			// All log streams finished (container stopped and logs fully read)
-			// Do final flush and exit
-			if data := bufferWriter.FlushAndClear(); data != nil {
-				yield(newEvent(&OutputData{
-					Data: data,
-				}), nil)
-			}
-			return
-
-		case <-ticker.C:
-			// Time-based flush
-			eventsEmitted := false
-
-			if data := bufferWriter.FlushAndClear(); data != nil {
-				if !yield(newEvent(&OutputData{
-					Data: data,
-				}), nil) {
-					return
-				}
-				eventsEmitted = true
-
-				if cp.stats != nil {
-					cp.stats.RecordOutput(ctx, int64(len(data)))
-				}
-			}
-
-			// Heartbeat if no output
-			if !hasEmittedEventsThisSecond && !eventsEmitted {
-				if !yield(newEvent(&HeartbeatEvent{
-					ProcessAlive: true,
-					ElapsedTime:  time.Since(startTime),
-				}), nil) {
-					return
-				}
-			}
-
-			hasEmittedEventsThisSecond = eventsEmitted
-
-		case <-flushChan:
-			// Size-based flush
-			if bufferWriter.Len() >= cp.maxBufferSize {
-				if data := bufferWriter.FlushAndClear(); data != nil {
-					if !yield(newEvent(&OutputData{
-						Data: data,
-					}), nil) {
-						return
-					}
-					hasEmittedEventsThisSecond = true
-
-					if cp.stats != nil {
-						cp.stats.RecordOutput(ctx, int64(len(data)))
-					}
-				}
-			}
-		}
-	}
-}
+// errConsumerStopped signals that the consumer stopped iterating.
+var errConsumerStopped = errors.New("consumer stopped iterating")
 
 // pullProgress represents a single line of JSON progress from Docker's ImagePull
 type pullProgress struct {
@@ -461,7 +377,7 @@ func (cp *ContainerProcess) pullImageWithProgress(
 	if !yield(newEvent(&ImagePullStart{
 		Image: cp.image,
 	}), nil) {
-		return fmt.Errorf("cancelled during image pull start")
+		return errConsumerStopped
 	}
 
 	// Pull the image
@@ -521,7 +437,7 @@ func (cp *ContainerProcess) pullImageWithProgress(
 				BytesDownloaded: currentBytes,
 				BytesTotal:      totalBytes,
 			}), nil) {
-				return fmt.Errorf("cancelled during image pull")
+				return errConsumerStopped
 			}
 
 			lastProgressEmit = now
@@ -533,10 +449,12 @@ func (cp *ContainerProcess) pullImageWithProgress(
 	}
 
 	// Emit completion event
-	yield(newEvent(&ImagePullComplete{
+	if !yield(newEvent(&ImagePullComplete{
 		Image:  cp.image,
 		Digest: digest,
-	}), nil)
+	}), nil) {
+		return errConsumerStopped
+	}
 
 	return nil
 }
