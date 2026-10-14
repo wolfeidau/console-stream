@@ -2,6 +2,7 @@ package consolestream
 
 import (
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -195,4 +196,48 @@ func TestBufferWriter_NewBufferWriter(t *testing.T) {
 	require.Equal(t, 0, writer.Len())
 	require.Equal(t, maxSize, writer.maxBufferSize)
 	require.NotNil(t, writer.flushChan)
+}
+
+func TestBufferWriter_Segments(t *testing.T) {
+	t.Parallel()
+
+	t.Run("separated writes create segments", func(t *testing.T) {
+		w := NewBufferWriter(make(chan struct{}, 1), 100)
+		_, err := w.Write([]byte("abc"))
+		require.NoError(t, err)
+		time.Sleep(5 * time.Millisecond)
+		_, err = w.Write([]byte("de"))
+		require.NoError(t, err)
+
+		data, segs := w.FlushSegments()
+		require.Equal(t, "abcde", string(data))
+		require.Len(t, segs, 2)
+		require.Equal(t, 0, segs[0].Offset)
+		require.Equal(t, 3, segs[1].Offset)
+		require.True(t, segs[1].Time.After(segs[0].Time))
+
+		data, segs = w.FlushSegments()
+		require.Nil(t, data)
+		require.Nil(t, segs)
+		require.Equal(t, 0, w.Len())
+	})
+
+	t.Run("back-to-back writes merge", func(t *testing.T) {
+		w := NewBufferWriter(make(chan struct{}, 1), 100)
+		_, _ = w.Write([]byte("a"))
+		_, _ = w.Write([]byte("b"))
+		_, segs := w.FlushSegments()
+		require.Len(t, segs, 1)
+	})
+
+	t.Run("FlushAndClear clears segments", func(t *testing.T) {
+		w := NewBufferWriter(make(chan struct{}, 1), 100)
+		_, _ = w.Write([]byte("a"))
+		require.Equal(t, "a", string(w.FlushAndClear()))
+		_, _ = w.Write([]byte("b"))
+		data, segs := w.FlushSegments()
+		require.Equal(t, "b", string(data))
+		require.Len(t, segs, 1)
+		require.Equal(t, 0, segs[0].Offset)
+	})
 }

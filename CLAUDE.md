@@ -196,7 +196,7 @@ const (
 | Event struct | Fields | Notes |
 |--------------|--------|-------|
 | `ProcessStart` | `PID, Command, Args` | |
-| `OutputData` | `Data []byte` | Combined stdout/stderr (pipe) or PTY output |
+| `OutputData` | `Data []byte, Segments []OutputSegment` | Combined stdout/stderr (pipe) or PTY output |
 | `HeartbeatEvent` | `ProcessAlive, ElapsedTime` | Silent process keep-alive |
 | `ProcessEnd` | `ExitCode, Duration, Success` | A non-zero exit is a `ProcessEnd` with `Success == false`, not an error. A signal-terminated process reports `128 + signal` (137 for SIGKILL), matching shells and container mode |
 | `ProcessError` | `Error, Message` | Failure that is not a non-zero exit |
@@ -230,7 +230,7 @@ func NewMarkerEvent(interval float64, label string) AscicastV3Event
 
 `ToAscicastV3` maps each event type to a line: output to `"o"`, `TerminalResizeEvent` to `"r"`, and process end to `"x"`. A `ProcessError` ends the recording with an `"m"` marker instead of an `"x"` exit event. The library does not emit resize events itself (PTY size is fixed by `WithPTYSize`); callers wrapping the event stream may inject them.
 
-Output is grouped per flush interval (default 1s), so animations and progress bars play back in 1s steps. Use `WithFlushInterval(50*time.Millisecond)` when recording for finer timing. Always record with `WithPTYMode()`.
+Recordings use per-read timestamps from `OutputData.Segments`, so the flush interval only affects delivery latency, not playback timing. Always record with `WithPTYMode()`.
 
 `timestamp` defaults to the recording start time (Unix seconds) when unset. `TermInfo` accepts optional `Type`, `Version` and `Theme` (`*TermTheme`); event intervals are rounded to microseconds.
 
@@ -255,7 +255,8 @@ Runtime failures after start are reported as `ProcessError` events; non-zero exi
 3. **Final flushing**: Remaining data is flushed when the process exits
 4. **Combined output**: In pipe mode stdout and stderr share one pipe, so relative order is preserved and they cannot be told apart. A single `OutputData` event type carries both.
 5. **Not line-buffered**: Events may split mid-line; partial lines stream on the flush interval. Consumers that need lines must reassemble them.
-6. **Heartbeat**: a `HeartbeatEvent` is emitted on a tick when there was no output in the previous tick and none in the current one.
+6. **Segments**: Each `OutputData` carries `Segments` (offset and read time per write into the buffer); writes within 1ms are merged. Asciicast uses them for per-read timing.
+7. **Heartbeat**: a `HeartbeatEvent` is emitted on a tick when there was no output in the previous tick and none in the current one.
 
 ### Process Lifecycle
 

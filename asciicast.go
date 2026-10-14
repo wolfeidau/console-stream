@@ -132,14 +132,39 @@ func ToAscicastV3(events iter.Seq2[Event, error], metadata AscicastV3Metadata) i
 			// Transform based on event type
 			switch e := event.Event.(type) {
 			case *OutputData:
-				var data []byte
-				data, carry = splitIncompleteUTF8(append(carry, e.Data...))
-				if len(data) == 0 {
+				if len(e.Segments) == 0 {
+					var data []byte
+					data, carry = splitIncompleteUTF8(append(carry, e.Data...))
+					if len(data) == 0 {
+						continue
+					}
+					lastEventTime = event.Timestamp
+					if !yield(NewOutputEvent(interval, string(data)), nil) {
+						return
+					}
 					continue
 				}
-				lastEventTime = event.Timestamp
-				if !yield(NewOutputEvent(interval, string(data)), nil) {
-					return
+				// One line per read segment, timed by when it was read.
+				for i, seg := range e.Segments {
+					end := len(e.Data)
+					if i+1 < len(e.Segments) {
+						end = min(e.Segments[i+1].Offset, len(e.Data))
+					}
+					if seg.Offset < 0 || seg.Offset > end {
+						continue // malformed caller-supplied segment
+					}
+					var data []byte
+					data, carry = splitIncompleteUTF8(append(carry, e.Data[seg.Offset:end]...))
+					if len(data) == 0 {
+						continue
+					}
+					segInterval := max(seg.Time.Sub(lastEventTime).Seconds(), 0)
+					if seg.Time.After(lastEventTime) {
+						lastEventTime = seg.Time
+					}
+					if !yield(NewOutputEvent(segInterval, string(data)), nil) {
+						return
+					}
 				}
 
 			case *TerminalResizeEvent:
