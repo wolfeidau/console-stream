@@ -263,6 +263,18 @@ env:
   DOCKER_BUILDKIT: "1"
 ```
 
+### Program status in the runner
+
+Set `program_status: true` to parse OSC 7501 reports (see [Program status (OSC 7501)](#program-status-osc-7501)). Set `fail_on_blocked: true` (requires `program_status`) to stop the child and exit non-zero on the first `blocked` status.
+
+- Text format prints `[STATUS] 15:04:05 working/kind build 50%: msg` lines, starting a new line first if output was mid-line.
+- JSON format emits `PROGRAM_STATUS` events.
+- Asciicast format records `"m"` markers. With `fail_on_blocked`, the recording ends at the blocked marker with no exit line.
+- The completion log includes a `program_status` summary of the last state per ID (`id=state`, root shown as `-`).
+- When the runner's stderr is a terminal, each report is re-emitted there as OSC 7501.
+
+See `config/program-status-runner-config.yaml`.
+
 ## Installation
 
 ```bash

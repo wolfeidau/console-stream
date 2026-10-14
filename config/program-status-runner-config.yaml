@@ -1,0 +1,16 @@
+# Reports OSC 7501 program status while running; the runner renders [STATUS] lines.
+command: "bash"
+args:
+  - "-c"
+  - |
+    printf '\033]7501;state=working:id=build\033\\'
+    echo "compiling"
+    sleep 0.3
+    printf '\033]7501;state=working:id=build:progress=50\033\\'
+    echo "linking"
+    sleep 0.3
+    printf '\033]7501;state=done:id=build\033\\'
+    echo "finished"
+process_type: "pty"
+program_status: true
+timeout: "30s"
