@@ -4,6 +4,7 @@ import (
 	"context"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -168,6 +169,7 @@ func TestLocalCancellorKillsSigtermIgnoringChild(t *testing.T) {
 	t.Parallel()
 
 	cmd := exec.Command("sh", "-c", `trap "" TERM; sleep 30`)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true} // group kill also reaps the sleep
 	require.NoError(t, cmd.Start())
 	waited := make(chan struct{})
 	go func() { _ = cmd.Wait(); close(waited) }()
@@ -181,5 +183,82 @@ func TestLocalCancellorKillsSigtermIgnoringChild(t *testing.T) {
 	case <-waited:
 	case <-time.After(time.Second):
 		t.Fatal("child was not killed")
+	}
+}
+
+// cancelAfterGrandchildPID streams the process, cancels ctx once a grandchild
+// pid is printed, and returns that pid.
+func cancelAfterGrandchildPID(t *testing.T, process *Process) int {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	pid := 0
+	var buf strings.Builder
+	for ev, err := range process.ExecuteAndStream(ctx) {
+		if err != nil {
+			break
+		}
+		if o, ok := ev.Event.(*OutputData); ok && pid == 0 {
+			buf.Write(o.Data)
+			if n, convErr := strconv.Atoi(strings.TrimSpace(buf.String())); convErr == nil {
+				pid = n
+				cancel()
+			}
+		}
+	}
+	require.NotZero(t, pid, "grandchild pid not seen")
+	return pid
+}
+
+func TestProcessCancelKillsGrandchildPipe(t *testing.T) {
+	t.Parallel()
+	process := NewProcess("sh", []string{"-c", "sleep 30 & echo $!; wait"},
+		WithPipeMode(), WithFlushInterval(50*time.Millisecond),
+		WithCancellor(NewLocalCancellor(2*time.Second)))
+	requireGone(t, cancelAfterGrandchildPID(t, process), 3*time.Second)
+}
+
+func TestProcessCancelKillsGrandchildPTY(t *testing.T) {
+	t.Parallel()
+	process := NewProcess("sh", []string{"-c", "sleep 30 & echo $!; wait"},
+		WithPTYMode(), WithFlushInterval(50*time.Millisecond),
+		WithCancellor(NewLocalCancellor(2*time.Second)))
+	requireGone(t, cancelAfterGrandchildPID(t, process), 3*time.Second)
+}
+
+func TestProcessEarlyBreakAfterReapKillsGrandchild(t *testing.T) {
+	t.Parallel()
+	// The shell exits at once; the background sleep holds the pipe open.
+	process := NewProcess("sh", []string{"-c", "sleep 30 & echo $!"},
+		WithPipeMode(), WithFlushInterval(50*time.Millisecond),
+		WithCancellor(NewLocalCancellor(2*time.Second)))
+
+	pid := 0
+	for ev, err := range process.ExecuteAndStream(context.Background()) {
+		require.NoError(t, err)
+		if o, ok := ev.Event.(*OutputData); ok {
+			n, convErr := strconv.Atoi(strings.TrimSpace(string(o.Data)))
+			require.NoError(t, convErr)
+			pid = n
+			break
+		}
+	}
+	require.NotZero(t, pid)
+	requireGone(t, pid, 3*time.Second)
+}
+
+func TestLocalCancellorFallsBackForNonLeader(t *testing.T) {
+	t.Parallel()
+	cmd := exec.Command("sleep", "30") // no Setpgid: shares the test's group
+	require.NoError(t, cmd.Start())
+	waited := make(chan struct{})
+	go func() { _ = cmd.Wait(); close(waited) }()
+
+	require.NoError(t, NewLocalCancellor(2*time.Second).Cancel(context.Background(), cmd.Process.Pid))
+	select {
+	case <-waited:
+	case <-time.After(3 * time.Second):
+		t.Fatal("non-leader process was not terminated")
 	}
 }

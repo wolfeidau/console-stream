@@ -446,7 +446,13 @@ type ContainerMount struct {
 	ReadOnly bool
 }
 
-// LocalCancellor implements process cancellation for local processes
+// LocalCancellor implements process cancellation for local processes.
+//
+// Cancel signals the whole process group led by pid (kill(-pid)), so
+// grandchildren spawned by the process are terminated with it. Processes
+// started by this library are group leaders (Setpgid for pipes, Setsid for
+// PTYs). If pid is not a group leader, Cancel falls back to signalling pid
+// alone.
 type LocalCancellor struct {
 	terminateTimeout time.Duration
 }
@@ -457,17 +463,36 @@ func NewLocalCancellor(terminateTimeout time.Duration) *LocalCancellor {
 	}
 }
 
+// Cancel sends SIGTERM to the process group led by pid (or to pid alone if it
+// is not a group leader), then SIGKILL if it has not exited by the terminate
+// timeout or ctx is done.
 func (lc *LocalCancellor) Cancel(ctx context.Context, pid int) error {
+	return lc.cancel(ctx, pid, true)
+}
+
+// cancelGroup is like Cancel but never signals the bare pid. It is safe to use
+// after the leader has been reaped: a pgid cannot be reused while any group
+// member lives, and kill(-pgid) returns ESRCH once the group is empty.
+func (lc *LocalCancellor) cancelGroup(ctx context.Context, pgid int) error {
+	return lc.cancel(ctx, pgid, false)
+}
+
+func (lc *LocalCancellor) cancel(ctx context.Context, pid int, allowPidFallback bool) error {
 	if pid <= 0 {
 		return fmt.Errorf("invalid pid: %d", pid)
 	}
 
-	// Send SIGTERM first
-	if err := syscall.Kill(pid, syscall.SIGTERM); err != nil {
+	target := -pid
+	err := syscall.Kill(target, syscall.SIGTERM)
+	if errors.Is(err, syscall.ESRCH) && allowPidFallback {
+		target = pid // not a group leader
+		err = syscall.Kill(target, syscall.SIGTERM)
+	}
+	if err != nil {
 		if errors.Is(err, syscall.ESRCH) {
 			return nil // already gone
 		}
-		return syscall.Kill(pid, syscall.SIGKILL)
+		return killIgnoreGone(target)
 	}
 
 	// Poll for exit (the owner reaps the child) until timeout, then force kill.
@@ -478,21 +503,22 @@ func (lc *LocalCancellor) Cancel(ctx context.Context, pid int) error {
 	defer tick.Stop()
 
 	for {
-		if err := syscall.Kill(pid, 0); errors.Is(err, syscall.ESRCH) {
+		if err := syscall.Kill(target, 0); errors.Is(err, syscall.ESRCH) {
 			return nil
 		}
 		select {
 		case <-tick.C:
 		case <-ctx.Done():
-			return killIgnoreGone(pid)
+			return killIgnoreGone(target)
 		case <-deadline.C:
-			return killIgnoreGone(pid)
+			return killIgnoreGone(target)
 		}
 	}
 }
 
-func killIgnoreGone(pid int) error {
-	if err := syscall.Kill(pid, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
+// killIgnoreGone sends SIGKILL to target (negative for a process group).
+func killIgnoreGone(target int) error {
+	if err := syscall.Kill(target, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
 		return err
 	}
 	return nil

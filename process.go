@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/creack/pty"
@@ -160,6 +161,12 @@ func (p *Process) startProcess(cmd *exec.Cmd) (r *os.File, label string, err err
 	}
 	cmd.Stdout = pw
 	cmd.Stderr = pw
+	// Make the child a process-group leader so Cancel can signal the group.
+	// (PTY mode gets this from pty.Start's Setsid.)
+	if cmd.SysProcAttr == nil {
+		cmd.SysProcAttr = &syscall.SysProcAttr{}
+	}
+	cmd.SysProcAttr.Setpgid = true
 	err = cmd.Start()
 	_ = pw.Close() // child holds its own copy
 	if err != nil {
@@ -223,11 +230,17 @@ func (p *Process) run(ctx context.Context, yield func(Event, error) bool) {
 
 	// stop terminates the child via the Cancellor and drains goroutines.
 	stop := func() {
+		cancelCtx := context.WithoutCancel(ctx)
 		select {
 		case <-reaped:
-			// Already reaped; avoid signalling a reusable pid.
+			// The leader is reaped, so its pid may be reused, but its pgid
+			// cannot be while any group member lives. Signal only the group
+			// to catch descendants still holding the tty/pipe. Custom
+			// Cancellors are not called: their semantics are unknown.
+			if lc, ok := p.cancellor.(*LocalCancellor); ok {
+				_ = lc.cancelGroup(cancelCtx, pid)
+			}
 		default:
-			cancelCtx := context.WithoutCancel(ctx)
 			if p.cancellor != nil {
 				_ = p.cancellor.Cancel(cancelCtx, pid) // Best effort cancellation
 			} else {
