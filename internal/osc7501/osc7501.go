@@ -60,9 +60,7 @@ func Parse(body []byte) (Report, bool) {
 	}
 
 	r := Report{Progress: -1, State: vals["state"]}
-	switch r.State {
-	case "idle", "working", "done", "blocked", "error", "clear":
-	default:
+	if !validState(r.State) {
 		return Report{}, false
 	}
 
@@ -73,14 +71,13 @@ func Parse(body []byte) (Report, bool) {
 		r.ID = id
 	}
 
-	if r.State == "blocked" {
-		switch k := vals["kind"]; k {
-		case "permission", "question", "auth":
+	if r.State == StateBlocked {
+		if k := vals["kind"]; validKind(k) {
 			r.Kind = k
 		}
 	}
 
-	if r.State == "working" || r.State == "blocked" {
+	if r.State == StateWorking || r.State == StateBlocked {
 		if p, ok := vals["progress"]; ok {
 			r.Progress = parseProgress(p)
 		}
@@ -105,8 +102,10 @@ func Parse(body []byte) (Report, bool) {
 }
 
 // Encode returns the full report sequence terminated by ESC \.
-// Keys are emitted in canonical order; empty values and a progress of -1
-// are omitted.
+// Keys are emitted in canonical order. Title and Msg are sanitised and
+// truncated to the protocol limits. Empty values are omitted, progress is
+// emitted only for working or blocked with a value of 0 or more (clamped to
+// 100), and kind only for blocked.
 func (r Report) Encode() []byte {
 	var b strings.Builder
 	b.WriteString("\x1b]7501;state=" + r.State)
@@ -116,19 +115,39 @@ func (r Report) Encode() []byte {
 		}
 	}
 	add("id", r.ID)
-	add("kind", r.Kind)
-	if r.Progress >= 0 {
-		add("progress", strconv.Itoa(r.Progress))
+	if r.State == StateBlocked {
+		add("kind", r.Kind)
+	}
+	if (r.State == StateWorking || r.State == StateBlocked) && r.Progress >= 0 {
+		add("progress", strconv.Itoa(min(r.Progress, 100)))
 	}
 	add("app", r.App)
-	if r.Title != "" {
-		add("title", base64.StdEncoding.EncodeToString([]byte(r.Title)))
+	if t := cleanText(r.Title, maxTitleDec); t != "" {
+		add("title", base64.StdEncoding.EncodeToString([]byte(t)))
 	}
-	if r.Msg != "" {
-		add("msg", base64.StdEncoding.EncodeToString([]byte(r.Msg)))
+	if m := cleanText(r.Msg, maxMsgDec); m != "" {
+		add("msg", base64.StdEncoding.EncodeToString([]byte(m)))
 	}
 	b.WriteString("\x1b\\")
 	return []byte(b.String())
+}
+
+// cleanText replaces control characters with spaces and truncates s to at
+// most max bytes on a rune boundary.
+func cleanText(s string, max int) string {
+	s = strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f || (r >= 0x80 && r <= 0x9f) {
+			return ' '
+		}
+		return r
+	}, s)
+	if len(s) <= max {
+		return s
+	}
+	for max > 0 && !utf8.RuneStart(s[max]) {
+		max--
+	}
+	return s[:max]
 }
 
 func validKey(k string) bool {

@@ -12,7 +12,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"unicode/utf8"
 
 	consolestream "github.com/wolfeidau/console-stream"
 	"github.com/wolfeidau/console-stream/internal/osc7501"
@@ -146,24 +145,6 @@ func (r *relay) run(state, msg, title string) {
 	r.write(osc7501.Report{State: state, ID: r.runID, Msg: msg, Title: title, Progress: -1})
 }
 
-// cleanText replaces control characters with spaces and truncates s to at
-// most max bytes on a rune boundary.
-func cleanText(s string, max int) string {
-	s = strings.Map(func(r rune) rune {
-		if r < 0x20 || r == 0x7f || (r >= 0x80 && r <= 0x9f) {
-			return ' '
-		}
-		return r
-	}, s)
-	if len(s) <= max {
-		return s
-	}
-	for max > 0 && !utf8.RuneStart(s[max]) {
-		max--
-	}
-	return s[:max]
-}
-
 // defaultStatusID derives a run id from the command: a sanitised base name
 // (at most 27 bytes) plus a random 4 hex digit suffix.
 func defaultStatusID(command string) string {
@@ -209,7 +190,7 @@ func wrapProgramStatus(events iter.Seq2[consolestream.Event, error], failOnBlock
 				if blocking {
 					blockedErr = blockedError(e)
 					if relaying {
-						rl.run("error", cleanText(blockedErr.Error(), 2048), "")
+						rl.run("error", blockedErr.Error(), "")
 					}
 				}
 				if !yield(event, nil) || blocking {
@@ -218,7 +199,7 @@ func wrapProgramStatus(events iter.Seq2[consolestream.Event, error], failOnBlock
 				continue
 			case *consolestream.ProcessStart:
 				if relaying {
-					rl.run("working", "", cleanText(rl.title, 192))
+					rl.run("working", "", rl.title)
 				}
 			case *consolestream.ProcessEnd:
 				if relaying {
@@ -230,7 +211,7 @@ func wrapProgramStatus(events iter.Seq2[consolestream.Event, error], failOnBlock
 				}
 			case *consolestream.ProcessError:
 				if relaying {
-					rl.run("error", cleanText(e.Message, 2048), "")
+					rl.run("error", e.Message, "")
 				}
 			}
 			if !yield(event, nil) {

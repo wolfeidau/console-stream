@@ -231,15 +231,6 @@ func TestNilRelay(t *testing.T) {
 	require.Len(t, slices.Collect(firstOf(wrapped)), 1)
 }
 
-func TestCleanText(t *testing.T) {
-	require.Equal(t, "a b c", cleanText("a\nb\x7fc", 100))
-	require.Equal(t, "a b", cleanText("a\u0085b", 100))
-	long := strings.Repeat("é", 100) // 200 bytes
-	got := cleanText(long, 11)
-	require.Equal(t, strings.Repeat("é", 5), got)
-	require.Equal(t, "abc", cleanText("abcdef", 3))
-}
-
 func TestFormatTextOutputStrip(t *testing.T) {
 	seqA := "\x1b]7501;state=working:id=build\x1b\\"
 	var buf bytes.Buffer

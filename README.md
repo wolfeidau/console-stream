@@ -163,7 +163,7 @@ for event, err := range process.ExecuteAndStream(ctx) {
 }
 ```
 
-To emit status from a Go program, use the OSC 7501 helpers in [`github.com/charmbracelet/x/ansi`](https://pkg.go.dev/github.com/charmbracelet/x/ansi) (v0.11.9+): `ansi.SetProgramStatus(ansi.ProgramStatus{...})` returns a sanitised report to write to stdout. `example/programstatus/` runs a child that reports with it and a parent that stops the child when it blocks:
+To emit status from an external Go program, use the OSC 7501 helpers in [`github.com/charmbracelet/x/ansi`](https://pkg.go.dev/github.com/charmbracelet/x/ansi) (v0.11.9+): `ansi.SetProgramStatus(ansi.ProgramStatus{...})` returns a sanitised report to write to stdout (`internal/` packages cannot be imported outside this module). `example/programstatus/` runs a child that reports with the project's internal emitter and a parent that stops the child when it blocks:
 
 ```bash
 go run ./example/programstatus

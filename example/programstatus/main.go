@@ -1,7 +1,9 @@
 // Command programstatus shows both sides of OSC 7501 program status: a child
-// that reports its status with github.com/charmbracelet/x/ansi, and a parent
-// that receives the reports as ProgramStatus events and stops the child when
-// it blocks on a prompt.
+// that reports its status with the project's internal/osc7501 emitter, and a
+// parent that receives the reports as ProgramStatus events and stops the child
+// when it blocks on a prompt. Programs outside this module cannot import
+// internal packages; they can use github.com/charmbracelet/x/ansi
+// (SetProgramStatus) or write the sequence directly.
 //
 // The parent runs this same binary in "child" mode under a PTY:
 //
@@ -17,8 +19,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/charmbracelet/x/ansi"
 	consolestream "github.com/wolfeidau/console-stream"
+	"github.com/wolfeidau/console-stream/internal/osc7501"
 )
 
 func main() {
@@ -32,37 +34,22 @@ func main() {
 // child is the monitored program. It reports status by writing OSC 7501
 // sequences to stdout, the same stream as its normal output.
 func child() {
-	report := func(s ansi.ProgramStatus) {
-		// Each report replaces its record, so repeat App in every report.
-		s.App = "demo"
-		fmt.Print(ansi.SetProgramStatus(s))
-	}
+	rep := osc7501.NewReporter(os.Stdout, "demo")
 
 	for p := 0; p <= 100; p += 25 {
-		report(ansi.ProgramStatus{
-			State:       ansi.ProgramStateWorking,
-			ID:          "build",
-			Progress:    p,
-			HasProgress: true,
-			Message:     "compiling",
-		})
+		_ = rep.Working("build", p, "compiling")
 		fmt.Printf("build %d%%\n", p)
 		time.Sleep(200 * time.Millisecond)
 	}
-	report(ansi.ProgramStatus{State: ansi.ProgramStateDone, ID: "build"})
+	_ = rep.Done("build", "")
 	fmt.Println("build finished")
 
 	// Waiting for a person. Unattended, nobody answers, so the parent stops us.
-	report(ansi.ProgramStatus{
-		State:   ansi.ProgramStateBlocked,
-		ID:      "deploy",
-		Kind:    ansi.ProgramStatusKindPermission,
-		Message: "deploy to prod?",
-	})
+	_ = rep.Blocked("deploy", osc7501.KindPermission, "deploy to prod?")
 	fmt.Print("deploy to prod? [y/N] ")
 	var answer string
 	_, _ = fmt.Scanln(&answer)
-	report(ansi.ProgramStatus{State: ansi.ProgramStateDone, ID: "deploy"})
+	_ = rep.Done("deploy", "")
 }
 
 // parent runs the child under a PTY with program status parsing enabled.
@@ -94,7 +81,7 @@ func parent() {
 		case *consolestream.ProgramStatus:
 			fmt.Printf("[STATUS] state=%s id=%s kind=%s progress=%d msg=%q\n",
 				e.State, e.ID, e.Kind, e.Progress, e.Msg)
-			if e.State == "blocked" {
+			if e.State == osc7501.StateBlocked {
 				fmt.Printf("blocked (%s): %s; stopping the child\n", e.Kind, e.Msg)
 				blocked = true
 				cancel()
