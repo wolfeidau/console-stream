@@ -462,6 +462,7 @@ See the `example/` directory for usage examples:
 - `example/container/`: Container execution with mounts and env
 - `example/asciicast/`: Asciicast v3 recording
 - `example/logging/`: Event type demonstration and JSON serialization
+- `example/programstatus/`: Child emits OSC 7501 with the internal `osc7501.Reporter`; parent consumes `ProgramStatus` and stops on `blocked`
 
 `cmd/runner` executes a YAML-configured command; `cmd/tester` generates test output.
 
