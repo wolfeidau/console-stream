@@ -14,7 +14,7 @@ import (
 	"strings"
 
 	consolestream "github.com/wolfeidau/console-stream"
-	"github.com/wolfeidau/console-stream/internal/osc7501"
+	"github.com/wolfeidau/osc7501"
 )
 
 // statusLine renders a status as state[/kind][ id][ n%][: msg].

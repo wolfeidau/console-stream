@@ -1,9 +1,8 @@
 // Command programstatus shows both sides of OSC 7501 program status: a child
-// that reports its status with the project's internal/osc7501 emitter, and a
-// parent that receives the reports as ProgramStatus events and stops the child
-// when it blocks on a prompt. Programs outside this module cannot import
-// internal packages; they can use github.com/charmbracelet/x/ansi
-// (SetProgramStatus) or write the sequence directly.
+// that reports its status with github.com/wolfeidau/osc7501, and a parent that
+// receives the reports as ProgramStatus events and stops the child when it
+// blocks on a prompt. github.com/charmbracelet/x/ansi (SetProgramStatus) also
+// works.
 //
 // The parent runs this same binary in "child" mode under a PTY:
 //
@@ -20,7 +19,7 @@ import (
 	"time"
 
 	consolestream "github.com/wolfeidau/console-stream"
-	"github.com/wolfeidau/console-stream/internal/osc7501"
+	"github.com/wolfeidau/osc7501"
 )
 
 func main() {

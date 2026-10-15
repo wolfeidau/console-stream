@@ -4,7 +4,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/wolfeidau/console-stream/internal/osc7501"
+	"github.com/wolfeidau/osc7501"
 )
 
 // pendingStatus is a program status report and the buffer offset it follows.

@@ -55,7 +55,7 @@ All modes write through `BufferWriter` (`buffer_writer.go`):
 Many programs emit OSC only when stdout is a TTY, so PTY mode sees the most traffic, but the single `BufferWriter` insertion point covers every mode.
 
 ## Design
-1. **`internal/osc7501` package**: pure Go, no dependencies.
+1. **`github.com/wolfeidau/osc7501` package**: pure Go, no dependencies.
    - `Report{State, ID, Kind, App, Title, Msg string; Progress int /* -1 = indeterminate */}`
    - `Parse(body []byte) (Report, bool)` (false means ignore the report), `Report.Encode() []byte`
    - `Scanner`: an `io.Writer` filter that wraps the downstream writer (`BufferWriter`).
@@ -79,13 +79,13 @@ Many programs emit OSC only when stdout is a TTY, so PTY mode sees the most traf
 7. **Runner** (done): `cmd/runner` renders `[STATUS]` lines, summarises final state per ID, can fail fast on `blocked`, and re-emits reports to its own TTY (stderr) when it is a terminal, prefixing ids with a run id and relaying its own run record (`working` at start, `done` or `error` at end).
 
 ## Phasing
-- **v1:** `internal/osc7501` parser/scanner, the `ProgramStatus` event and wiring for all modes (pipe, PTY and container share `BufferWriter`), and asciicast markers. The parser/scanner lands first as its own PR.
+- **v1:** `github.com/wolfeidau/osc7501` parser/scanner, the `ProgramStatus` event and wiring for all modes (pipe, PTY and container share `BufferWriter`), and asciicast markers. The parser/scanner lands first as its own PR.
 - **Query reply:** PTY mode answers the feature query.
 - **Runner:** rendering, summary, fail-fast and re-emit.
 - **Later:** metrics.
 
 ## Effort
-- `internal/osc7501` package: about 300 LOC, plus about 300 LOC of table and fuzz tests.
+- `github.com/wolfeidau/osc7501` package: about 300 LOC, plus about 300 LOC of table and fuzz tests.
 - Wiring across `console.go`, `buffer_writer.go`, `stream_loop.go` and `asciicast.go`: about 100–150 LOC.
 - Roughly a day overall, mostly spent on scanner edge cases.
 
@@ -97,7 +97,7 @@ Many programs emit OSC only when stdout is a TTY, so PTY mode sees the most traf
 - **Event noise.** Frequent status updates split batches into extra small `OutputData` events and trigger extra flushes. Coalesce repeats for the same id within a tick if needed.
 
 ## Verification
-- `go test ./internal/osc7501/...`: table tests for every parse rule and limit. `FuzzScanner` asserts that output equals input and that nothing panics.
+- `go test ./...` in github.com/wolfeidau/osc7501: table tests for every parse rule and limit. `FuzzScanner` asserts that output equals input and that nothing panics.
 - An end-to-end test in `process_test.go` runs `printf '\033]7501;state=working:msg=%s\033\\'` under `WithPTYMode(), WithProgramStatus()`. It asserts that `ProgramStatus` arrives after the preceding `OutputData` and that `Msg` is decoded. Equivalent pipe and container tests cover the shared `BufferWriter` path.
 - `cmd/runner exec --format asciicast` against a script that emits states, confirming the `"m"` markers appear in the `.cast`.
 - `make lint` and `make test`.

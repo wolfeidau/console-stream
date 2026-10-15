@@ -13,7 +13,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 	consolestream "github.com/wolfeidau/console-stream"
-	"github.com/wolfeidau/console-stream/internal/osc7501"
+	"github.com/wolfeidau/osc7501"
 )
 
 func ps(state, id, kind, msg string, progress int) *consolestream.ProgramStatus {

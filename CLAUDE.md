@@ -269,6 +269,7 @@ Runtime failures after start are reported as `ProcessError` events; non-zero exi
 
 Programs can report what they are doing (working, blocked, done) with OSC 7501 escape sequences ([spec](https://www.superlogical.com/rex/docs/build/program-status); local copy in `spec/osc7501-program-status.md`). Enable parsing with `WithProgramStatus()` (pipe and PTY) or `WithContainerProgramStatus()`. It is off by default.
 
+- Parsing, encoding and stripping come from `github.com/wolfeidau/osc7501`; protocol changes land there first.
 - Each report yields a `ProgramStatus` event (`State, ID, Kind, App, Title, Msg, Progress`; `Progress` is -1 when indeterminate; `Title` and `Msg` are decoded).
 - The report bytes still pass through unchanged in `OutputData`.
 - Ordering: `ProgramStatus` is yielded after the `OutputData` holding all preceding bytes and before any following bytes. It is delivered promptly, not at the next batch tick.
@@ -462,7 +463,7 @@ See the `example/` directory for usage examples:
 - `example/container/`: Container execution with mounts and env
 - `example/asciicast/`: Asciicast v3 recording
 - `example/logging/`: Event type demonstration and JSON serialization
-- `example/programstatus/`: Child emits OSC 7501 with the internal `osc7501.Reporter`; parent consumes `ProgramStatus` and stops on `blocked`
+- `example/programstatus/`: Child emits OSC 7501 with `github.com/wolfeidau/osc7501` `Reporter`; parent consumes `ProgramStatus` and stops on `blocked`
 
 `cmd/runner` executes a YAML-configured command; `cmd/tester` generates test output.
 
