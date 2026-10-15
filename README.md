@@ -163,6 +163,12 @@ for event, err := range process.ExecuteAndStream(ctx) {
 }
 ```
 
+To emit status from a Go program, use the OSC 7501 helpers in [`github.com/charmbracelet/x/ansi`](https://pkg.go.dev/github.com/charmbracelet/x/ansi) (v0.11.9+): `ansi.SetProgramStatus(ansi.ProgramStatus{...})` returns a sanitised report to write to stdout. `example/programstatus/` runs a child that reports with it and a parent that stops the child when it blocks:
+
+```bash
+go run ./example/programstatus
+```
+
 ## Asciicast Recording
 
 Record a PTY session in asciicast v3 format:
