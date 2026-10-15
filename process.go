@@ -436,6 +436,7 @@ func (s *ProcessStats) CloseStatus(ctx context.Context, at time.Time) {
 func (s *ProcessStats) Start(ctx context.Context) {
 	s.mutex.Lock()
 	s.startTime = time.Now()
+	s.statusTimer = StatusTimer{} // each run starts with fresh status time
 	s.mutex.Unlock()
 
 	// Record process status as running

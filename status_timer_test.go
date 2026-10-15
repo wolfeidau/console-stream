@@ -123,3 +123,22 @@ func TestProcessStatusTimeMetric(t *testing.T) {
 	require.GreaterOrEqual(t, got["working"], 0.25)
 	require.GreaterOrEqual(t, got["blocked"], 0.25)
 }
+
+func TestProcessStatsStatusTimeResetsPerRun(t *testing.T) {
+	ctx := context.Background()
+	stats, err := NewProcessStats(metric.NewMeterProvider().Meter("test"), ProcessInfo{Command: "x"})
+	require.NoError(t, err)
+
+	t0 := time.Unix(1000, 0)
+	run := func(d time.Duration) {
+		stats.Start(ctx)
+		stats.ObserveStatus(ctx, Event{Timestamp: t0, Event: &ProgramStatus{State: "working", Progress: -1}})
+		stats.CloseStatus(ctx, t0.Add(d))
+	}
+
+	run(2 * time.Second)
+	require.Equal(t, 2*time.Second, stats.GetSnapshot().StatusTime.Working)
+
+	run(3 * time.Second)
+	require.Equal(t, 3*time.Second, stats.GetSnapshot().StatusTime.Working)
+}
