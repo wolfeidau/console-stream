@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	consolestream "github.com/wolfeidau/console-stream"
 	"github.com/wolfeidau/osc7501"
@@ -175,7 +176,9 @@ func defaultStatusID(command string) string {
 	if len(b) > 27 {
 		b = b[:27]
 	}
-	if len(b) == 0 {
+	// filepath.Base returns "." or "/" for empty or root paths; fall back when
+	// nothing identifying is left.
+	if !strings.ContainsFunc(string(b), func(r rune) bool { return unicode.IsLetter(r) || unicode.IsDigit(r) }) {
 		b = []byte("run")
 	}
 	var r [2]byte

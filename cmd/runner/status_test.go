@@ -284,7 +284,9 @@ func TestDefaultStatusID(t *testing.T) {
 		require.True(t, osc7501.ValidSegment(id))
 	}
 	require.True(t, strings.HasPrefix(defaultStatusID("/usr/local/bin/my tool!"), "my-tool--"))
-	require.True(t, strings.HasPrefix(defaultStatusID(""), "run-") || strings.HasPrefix(defaultStatusID(""), ".-"))
+	for _, cmd := range []string{"", "/", ".", "..", "!!!"} {
+		require.True(t, strings.HasPrefix(defaultStatusID(cmd), "run-"), cmd)
+	}
 
 	cfgPath := filepath.Join(t.TempDir(), "c.yaml")
 	require.NoError(t, os.WriteFile(cfgPath, []byte("command: echo\nprogram_status: true\n"), 0o600))
