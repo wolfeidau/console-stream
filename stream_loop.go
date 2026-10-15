@@ -70,6 +70,10 @@ func streamOutput(
 			}
 			if stats != nil {
 				stats.RecordEvent(ctx, "program_status")
+				stats.ObserveStatus(ctx, Event{Timestamp: st.Time, Event: &ProgramStatus{
+					State: r.State, ID: r.ID, Kind: r.Kind, App: r.App,
+					Title: r.Title, Msg: r.Msg, Progress: r.Progress,
+				}})
 			}
 			active = true
 		}
@@ -170,6 +174,7 @@ func emitProcessEnd(ctx context.Context, yield func(Event, error) bool, stats *P
 	}
 
 	if stats != nil {
+		stats.CloseStatus(ctx, end)
 		stats.Stop(ctx)
 		if err == nil || isExit {
 			stats.SetExitCode(exitCode)

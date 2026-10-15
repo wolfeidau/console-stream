@@ -213,6 +213,21 @@ const (
 
 Helpers: `IsOutputEvent`, `IsHeartbeatEvent`, `IsProcessStartEvent`, `IsProcessEndEvent`, `IsProcessErrorEvent`, `IsProcessLifecycleEvent`, `IsTerminalResizeEvent`, `IsContainerCreateEvent`, `IsContainerRemoveEvent`, `IsProgramStatusEvent`.
 
+### Program status time
+
+```go
+type StatusDurations struct{ Working, Blocked, Idle time.Duration }
+
+// StatusTimer accumulates wall-clock time per state; blocked > working > idle.
+// Zero value is ready; not safe for concurrent use.
+type StatusTimer struct{ /* unexported */ }
+func (t *StatusTimer) Observe(ev Event)   // ProgramStatus applies; ProcessEnd/ProcessError close
+func (t *StatusTimer) Close(at time.Time) // idempotent
+func (t *StatusTimer) Totals() StatusDurations
+```
+
+`ProcessStatsSnapshot.StatusTime` carries the same totals when `WithMeter` is set.
+
 ### Cancellor
 
 ```go
@@ -278,6 +293,7 @@ Programs can report what they are doing (working, blocked, done) with OSC 7501 e
 - Feature query: in PTY mode the library answers `OSC 7501;?` by writing a reply listing the default states and kinds to the child's stdin. Pipe and container modes have no stdin back-channel and cannot reply, so programs there should report without querying. `CSI c` (DA1) is not answered.
 - Only OSC framing is tracked; an `ESC ]` inside a DCS or APC string can be mis-framed.
 - Asciicast: a marker (`status: <state>[/<kind>][ <id>][ <progress>%][: <msg>]`) is written when `(id, state, kind)` changes for an ID. Progress-only and message-only changes write nothing, and the recording continues.
+- Time in state: `StatusTimer` (feed it events with `Observe`, read `Totals`) measures wall-clock time per state. At each instant the run counts once under its most urgent live state (blocked > working > idle) across IDs; `done`/`error` end an ID's record, `clear` removes it and its descendants, and `ProcessEnd`/`ProcessError` stop the clock. With `WithMeter` the counter `process.program_status.duration{state}` (seconds) is recorded, and `GetStats().StatusTime` returns the totals. The runner logs them as `status_time`.
 
 ```go
 process := consolestream.NewProcess("agent", nil,
@@ -467,7 +483,7 @@ See the `example/` directory for usage examples:
 
 `cmd/runner` executes a YAML-configured command; `cmd/tester` generates test output.
 
-Runner program status: `program_status: true` enables OSC 7501 parsing; `fail_on_blocked: true` (requires `program_status`) stops the child and exits non-zero on the first `blocked` status. Text output prints `[STATUS]` lines, JSON emits `PROGRAM_STATUS` events, asciicast records `"m"` markers (a fail-fast recording ends at the blocked marker with no exit line). The completion log carries a `program_status` summary (`id=state[/kind]`, root as `-`), and reports are re-emitted to stderr when it is a terminal, grouped under a run id (`status_id`, default `<command>-xxxx`; `build` becomes `<id>/build`, root becomes `<id>`). The runner also relays its own run record (`working` at start, `done`/`error` with exit code at end, which persists in the terminal after exit), and text output strips OSC 7501 sequences from `[OUTPUT]` lines when `program_status` is on (JSON/asciicast keep raw bytes). Example: `config/program-status-runner-config.yaml`.
+Runner program status: `program_status: true` enables OSC 7501 parsing; `fail_on_blocked: true` (requires `program_status`) stops the child and exits non-zero on the first `blocked` status. Text output prints `[STATUS]` lines, JSON emits `PROGRAM_STATUS` events, asciicast records `"m"` markers (a fail-fast recording ends at the blocked marker with no exit line). The completion log carries a `program_status` summary (`id=state[/kind]`, root as `-`) and `status_time` (`working=12.3s blocked=4.1s idle=200ms`, zero entries omitted), and reports are re-emitted to stderr when it is a terminal, grouped under a run id (`status_id`, default `<command>-xxxx`; `build` becomes `<id>/build`, root becomes `<id>`). The runner also relays its own run record (`working` at start, `done`/`error` with exit code at end, which persists in the terminal after exit), and text output strips OSC 7501 sequences from `[OUTPUT]` lines when `program_status` is on (JSON/asciicast keep raw bytes). Example: `config/program-status-runner-config.yaml`.
 
 ## Requirements
 
