@@ -13,4 +13,6 @@ args:
     echo "finished"
 process_type: "pty"
 program_status: true
+# Run id for the terminal relay: records appear as build-demo/build, run record as build-demo.
+status_id: "build-demo"
 timeout: "30s"

@@ -76,7 +76,7 @@ Many programs emit OSC only when stdout is a TTY, so PTY mode sees the most traf
    - Pipe and container modes have no stdin back-channel, so no reply is sent; programs there should report without querying (allowed since rev 0.3).
    - `CSI c` (DA1) is not answered. Our reply arrives first, so DA1-fallback programs conclude the protocol is supported. Programs that also wait for the DA1 reply wait until their own timeout.
 6. **Asciicast**: map `ProgramStatus` to an `"m"` marker labelled `status: <state>[/<kind>][ <id>][ <progress>%][: <msg>]`, only when `(id, state, kind)` changes; progress-only updates get no marker.
-7. **Runner** (done): `cmd/runner` renders `[STATUS]` lines, summarises final state per ID, can fail fast on `blocked`, and re-emits reports to its own TTY (stderr) when it is a terminal.
+7. **Runner** (done): `cmd/runner` renders `[STATUS]` lines, summarises final state per ID, can fail fast on `blocked`, and re-emits reports to its own TTY (stderr) when it is a terminal, prefixing ids with a run id and relaying its own run record (`working` at start, `done` or `error` at end).
 
 ## Phasing
 - **v1:** `internal/osc7501` parser/scanner, the `ProgramStatus` event and wiring for all modes (pipe, PTY and container share `BufferWriter`), and asciicast markers. The parser/scanner lands first as its own PR.
