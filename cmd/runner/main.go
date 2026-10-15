@@ -16,6 +16,7 @@ import (
 
 	"github.com/creack/pty"
 	consolestream "github.com/wolfeidau/console-stream"
+	"github.com/wolfeidau/console-stream/internal/osc7501"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"gopkg.in/yaml.v3"
 )
@@ -30,6 +31,8 @@ type Config struct {
 
 	ProgramStatus bool `yaml:"program_status"`  // parse OSC 7501 reports
 	FailOnBlocked bool `yaml:"fail_on_blocked"` // stop and fail on a blocked status
+
+	StatusID string `yaml:"status_id"` // run id for the terminal relay
 }
 
 type PTYSize struct {
@@ -188,7 +191,8 @@ func runExec(flags ExecFlags, logger *slog.Logger) error {
 		"type", config.ProcessType,
 		"env_vars", len(config.Env),
 		"program_status", config.ProgramStatus,
-		"fail_on_blocked", config.FailOnBlocked)
+		"fail_on_blocked", config.FailOnBlocked,
+		"status_id", config.StatusID)
 
 	// Apply timeout override if provided
 	timeout := config.Timeout
@@ -275,6 +279,18 @@ func loadConfig(configPath string) (*Config, error) {
 
 	if config.FailOnBlocked && !config.ProgramStatus {
 		return nil, fmt.Errorf("fail_on_blocked requires program_status")
+	}
+
+	if config.StatusID != "" && !config.ProgramStatus {
+		return nil, fmt.Errorf("status_id requires program_status")
+	}
+
+	if config.StatusID != "" && !osc7501.ValidSegment(config.StatusID) {
+		return nil, fmt.Errorf("invalid status_id %q: must match [A-Za-z0-9_.+-]{1,32}", config.StatusID)
+	}
+
+	if config.StatusID == "" && config.ProgramStatus {
+		config.StatusID = defaultStatusID(config.Command)
 	}
 
 	// Set defaults
@@ -426,14 +442,15 @@ func formatOutput(events iter.Seq2[consolestream.Event, error], format, outputPa
 	var blocked func() error
 	var statusEvents iter.Seq2[consolestream.Event, error] = wrappedEvents
 	if config.ProgramStatus {
-		statusEvents, blocked = wrapProgramStatus(wrappedEvents, config.FailOnBlocked, tracker, reemitWriter())
+		rl := &relay{w: reemitWriter(), runID: config.StatusID, title: buildCommandString(config.Command, config.Args)}
+		statusEvents, blocked = wrapProgramStatus(wrappedEvents, config.FailOnBlocked, tracker, rl)
 	}
 
 	// Format output based on requested format
 	var err error
 	switch format {
 	case "text":
-		err = formatTextOutput(statusEvents, writer)
+		err = formatTextOutput(statusEvents, writer, config.ProgramStatus)
 	case "json":
 		err = formatJSONOutput(statusEvents, writer)
 	case "asciicast":
@@ -464,8 +481,11 @@ func formatOutput(events iter.Seq2[consolestream.Event, error], format, outputPa
 		"output_bytes", stats.OutputBytes,
 		"output_destination", outputDest,
 	}
-	if summary := tracker.summary(); config.ProgramStatus && summary != "" {
-		attrs = append(attrs, "program_status", summary)
+	if config.ProgramStatus {
+		attrs = append(attrs, "status_id", config.StatusID)
+		if summary := tracker.summary(); summary != "" {
+			attrs = append(attrs, "program_status", summary)
+		}
 	}
 	logger.Info("Execution completed", attrs...)
 
@@ -475,8 +495,26 @@ func formatOutput(events iter.Seq2[consolestream.Event, error], format, outputPa
 	return err
 }
 
-func formatTextOutput(events iter.Seq2[consolestream.Event, error], writer io.Writer) error {
+// formatTextOutput writes events as text. With strip set, OSC 7501 sequences
+// are removed from [OUTPUT] lines (the [STATUS] lines carry them instead).
+func formatTextOutput(events iter.Seq2[consolestream.Event, error], writer io.Writer, strip bool) error {
 	lineEnded := true // whether the last output written ended with a newline
+	var stripper osc7501.Stripper
+	lastTS := time.Time{}
+	writeOutput := func(ts time.Time, data []byte) {
+		fmt.Fprintf(writer, "[OUTPUT] %s: %s", ts.Format("15:04:05"), string(data))
+		if len(data) > 0 {
+			lineEnded = data[len(data)-1] == '\n'
+		}
+	}
+	flush := func() {
+		if strip {
+			if data := stripper.Flush(); len(data) > 0 {
+				writeOutput(lastTS, data)
+			}
+		}
+	}
+	defer flush()
 	for event, err := range events {
 		if err != nil {
 			fmt.Fprintf(writer, "Error: %v\n", err)
@@ -485,11 +523,14 @@ func formatTextOutput(events iter.Seq2[consolestream.Event, error], writer io.Wr
 
 		switch event.EventType() {
 		case consolestream.OutputEvent:
-			data := event.Event.(*consolestream.OutputData)
-			fmt.Fprintf(writer, "[OUTPUT] %s: %s", event.Timestamp.Format("15:04:05"), string(data.Data))
-			if len(data.Data) > 0 {
-				lineEnded = data.Data[len(data.Data)-1] == '\n'
+			data := event.Event.(*consolestream.OutputData).Data
+			lastTS = event.Timestamp
+			if strip {
+				if data = stripper.Strip(data); len(data) == 0 {
+					continue
+				}
 			}
+			writeOutput(event.Timestamp, data)
 		case consolestream.ProgramStatusEventType:
 			if !lineEnded {
 				fmt.Fprint(writer, "\n")
@@ -501,9 +542,11 @@ func formatTextOutput(events iter.Seq2[consolestream.Event, error], writer io.Wr
 			data := event.Event.(*consolestream.ProcessStart)
 			fmt.Fprintf(writer, "Process started (PID: %d, Command: %s)\n", data.PID, data.Command)
 		case consolestream.ProcessEndEvent:
+			flush()
 			data := event.Event.(*consolestream.ProcessEnd)
 			fmt.Fprintf(writer, "Process completed (Exit Code: %d, Duration: %v)\n", data.ExitCode, data.Duration)
 		case consolestream.ProcessErrorEvent:
+			flush()
 			data := event.Event.(*consolestream.ProcessError)
 			fmt.Fprintf(writer, "Process error: %s\n", data.Message)
 		case consolestream.HeartbeatEventType:

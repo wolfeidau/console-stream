@@ -271,7 +271,9 @@ Set `program_status: true` to parse OSC 7501 reports (see [Program status (OSC 7
 - JSON format emits `PROGRAM_STATUS` events.
 - Asciicast format records `"m"` markers. With `fail_on_blocked`, the recording ends at the blocked marker with no exit line.
 - The completion log includes a `program_status` summary of the last state per ID (`id=state`, root shown as `-`).
-- When the runner's stderr is a terminal, each report is re-emitted there as OSC 7501.
+- When the runner's stderr is a terminal, each report is re-emitted there as OSC 7501, grouped under the run id: `status_id` (default `<command>-xxxx`) prefixes ids (`build` becomes `<id>/build`, the root becomes `<id>`).
+- The runner also relays its own run record under the run id: `working` at start, then `done` or `error` (with the exit code) at end, which persists in the terminal after exit.
+- Text output strips OSC 7501 sequences from `[OUTPUT]` lines when `program_status` is on; JSON and asciicast keep the raw bytes.
 
 See `config/program-status-runner-config.yaml`.
 

@@ -67,7 +67,7 @@ func Parse(body []byte) (Report, bool) {
 	}
 
 	if id, ok := vals["id"]; ok {
-		if !validID(id) {
+		if !ValidID(id) {
 			return Report{}, false
 		}
 		r.ID = id
@@ -86,7 +86,7 @@ func Parse(body []byte) (Report, bool) {
 		}
 	}
 
-	if a, ok := vals["app"]; ok && validSegment(a) {
+	if a, ok := vals["app"]; ok && ValidSegment(a) {
 		r.App = a
 	}
 
@@ -156,8 +156,8 @@ func validValue(v string) bool {
 	return true
 }
 
-// validSegment reports whether s matches [A-Za-z0-9_.+-]{1,32}.
-func validSegment(s string) bool {
+// ValidSegment reports whether s matches [A-Za-z0-9_.+-]{1,32}.
+func ValidSegment(s string) bool {
 	if s == "" || len(s) > maxSegmentLen {
 		return false
 	}
@@ -169,7 +169,7 @@ func validSegment(s string) bool {
 	return true
 }
 
-func validID(id string) bool {
+func ValidID(id string) bool {
 	if id == "" || len(id) > maxIDLen {
 		return false
 	}
@@ -178,7 +178,7 @@ func validID(id string) bool {
 		return false
 	}
 	for _, s := range segs {
-		if !validSegment(s) {
+		if !ValidSegment(s) {
 			return false
 		}
 	}

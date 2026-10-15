@@ -1,13 +1,18 @@
 package main
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
+	"fmt"
 	"io"
 	"iter"
 	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	consolestream "github.com/wolfeidau/console-stream"
 	"github.com/wolfeidau/console-stream/internal/osc7501"
@@ -108,29 +113,127 @@ func blockedError(s *consolestream.ProgramStatus) error {
 	return errors.New(msg)
 }
 
-// wrapProgramStatus tracks statuses, re-emits them to reemit (when non-nil) and,
-// if failOnBlocked is set, stops iteration at the first blocked status. The
-// returned func reports the blocked error, if any, once iteration has ended.
-func wrapProgramStatus(events iter.Seq2[consolestream.Event, error], failOnBlocked bool, tracker *statusTracker, reemit io.Writer) (iter.Seq2[consolestream.Event, error], func() error) {
+// relay writes OSC 7501 records to a terminal, grouping them under runID.
+// A nil relay or nil w disables relaying.
+type relay struct {
+	w     io.Writer
+	runID string
+	title string
+}
+
+func (r *relay) active() bool { return r != nil && r.w != nil }
+
+func (r *relay) write(rep osc7501.Report) {
+	_, _ = r.w.Write(rep.Encode())
+}
+
+// child relays a child report with its id prefixed by the run id.
+func (r *relay) child(s *consolestream.ProgramStatus) {
+	rep := toReport(s)
+	if rep.ID == "" {
+		rep.ID = r.runID
+	} else {
+		rep.ID = r.runID + "/" + rep.ID
+	}
+	if !osc7501.ValidID(rep.ID) {
+		return
+	}
+	r.write(rep)
+}
+
+// run relays the run's own record.
+func (r *relay) run(state, msg, title string) {
+	r.write(osc7501.Report{State: state, ID: r.runID, Msg: msg, Title: title, Progress: -1})
+}
+
+// cleanText replaces control characters with spaces and truncates s to at
+// most max bytes on a rune boundary.
+func cleanText(s string, max int) string {
+	s = strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f || (r >= 0x80 && r <= 0x9f) {
+			return ' '
+		}
+		return r
+	}, s)
+	if len(s) <= max {
+		return s
+	}
+	for max > 0 && !utf8.RuneStart(s[max]) {
+		max--
+	}
+	return s[:max]
+}
+
+// defaultStatusID derives a run id from the command: a sanitised base name
+// (at most 27 bytes) plus a random 4 hex digit suffix.
+func defaultStatusID(command string) string {
+	b := []byte(filepath.Base(command))
+	for i, c := range b {
+		if !osc7501.ValidSegment(string(c)) {
+			b[i] = '-'
+		}
+	}
+	if len(b) > 27 {
+		b = b[:27]
+	}
+	if len(b) == 0 {
+		b = []byte("run")
+	}
+	var r [2]byte
+	_, _ = rand.Read(r[:])
+	return string(b) + "-" + hex.EncodeToString(r[:])
+}
+
+// wrapProgramStatus tracks statuses, relays them and the run's own record to
+// rl (when set) and, if failOnBlocked is set, stops iteration at the first
+// blocked status. The returned func reports the blocked error, if any, once
+// iteration has ended.
+func wrapProgramStatus(events iter.Seq2[consolestream.Event, error], failOnBlocked bool, tracker *statusTracker, rl *relay) (iter.Seq2[consolestream.Event, error], func() error) {
 	var blockedErr error
 	wrapped := func(yield func(consolestream.Event, error) bool) {
 		for event, err := range events {
-			s, ok := event.Event.(*consolestream.ProgramStatus)
-			if err != nil || !ok {
+			if err != nil {
 				if !yield(event, err) {
 					return
 				}
 				continue
 			}
-			tracker.apply(s)
-			if reemit != nil {
-				_, _ = reemit.Write(toReport(s).Encode())
+			relaying := rl.active()
+			switch e := event.Event.(type) {
+			case *consolestream.ProgramStatus:
+				tracker.apply(e)
+				if relaying {
+					rl.child(e)
+				}
+				blocking := failOnBlocked && e.State == "blocked"
+				if blocking {
+					blockedErr = blockedError(e)
+					if relaying {
+						rl.run("error", cleanText(blockedErr.Error(), 2048), "")
+					}
+				}
+				if !yield(event, nil) || blocking {
+					return
+				}
+				continue
+			case *consolestream.ProcessStart:
+				if relaying {
+					rl.run("working", "", cleanText(rl.title, 192))
+				}
+			case *consolestream.ProcessEnd:
+				if relaying {
+					if e.Success {
+						rl.run("done", "", "")
+					} else {
+						rl.run("error", fmt.Sprintf("exit code %d", e.ExitCode), "")
+					}
+				}
+			case *consolestream.ProcessError:
+				if relaying {
+					rl.run("error", cleanText(e.Message, 2048), "")
+				}
 			}
 			if !yield(event, nil) {
-				return
-			}
-			if failOnBlocked && s.State == "blocked" {
-				blockedErr = blockedError(s)
 				return
 			}
 		}

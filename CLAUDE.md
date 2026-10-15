@@ -465,7 +465,7 @@ See the `example/` directory for usage examples:
 
 `cmd/runner` executes a YAML-configured command; `cmd/tester` generates test output.
 
-Runner program status: `program_status: true` enables OSC 7501 parsing; `fail_on_blocked: true` (requires `program_status`) stops the child and exits non-zero on the first `blocked` status. Text output prints `[STATUS]` lines, JSON emits `PROGRAM_STATUS` events, asciicast records `"m"` markers (a fail-fast recording ends at the blocked marker with no exit line). The completion log carries a `program_status` summary (`id=state[/kind]`, root as `-`), and reports are re-emitted to stderr when it is a terminal. Example: `config/program-status-runner-config.yaml`.
+Runner program status: `program_status: true` enables OSC 7501 parsing; `fail_on_blocked: true` (requires `program_status`) stops the child and exits non-zero on the first `blocked` status. Text output prints `[STATUS]` lines, JSON emits `PROGRAM_STATUS` events, asciicast records `"m"` markers (a fail-fast recording ends at the blocked marker with no exit line). The completion log carries a `program_status` summary (`id=state[/kind]`, root as `-`), and reports are re-emitted to stderr when it is a terminal, grouped under a run id (`status_id`, default `<command>-xxxx`; `build` becomes `<id>/build`, root becomes `<id>`). The runner also relays its own run record (`working` at start, `done`/`error` with exit code at end, which persists in the terminal after exit), and text output strips OSC 7501 sequences from `[OUTPUT]` lines when `program_status` is on (JSON/asciicast keep raw bytes). Example: `config/program-status-runner-config.yaml`.
 
 ## Requirements
 
