@@ -143,6 +143,7 @@ Programs can report what they are doing (working, blocked, done) with OSC 7501 e
 - Feature query: in PTY mode the library answers `OSC 7501;?` by writing a reply listing the default states and kinds to the child's stdin. Pipe and container modes have no stdin back-channel and cannot reply, so programs there should report without querying. `CSI c` (DA1) is not answered.
 - Only OSC framing is tracked; an `ESC ]` inside a DCS or APC string can be mis-framed.
 - Asciicast: a marker (`status: <state>[/<kind>][ <id>][ <progress>%][: <msg>]`) is written when `(id, state, kind)` changes for an ID. Progress-only and message-only changes write nothing, and the recording continues.
+- Time in state: `StatusTimer` (feed it events with `Observe`, read `Totals`) measures wall-clock time per state. At each instant the run counts once under its most urgent live state (blocked > working > idle) across IDs; `done`/`error` end an ID's record, `clear` removes it and its descendants, and `ProcessEnd`/`ProcessError` stop the clock. With `WithMeter` the counter `process.program_status.duration{state}` (seconds) is recorded, and `GetStats().StatusTime` returns the totals. The runner logs them as `status_time`.
 
 ```go
 process := consolestream.NewProcess("agent", nil,
@@ -276,7 +277,7 @@ Set `program_status: true` to parse OSC 7501 reports (see [Program status (OSC 7
 - Text format prints `[STATUS] 15:04:05 working/kind build 50%: msg` lines, starting a new line first if output was mid-line.
 - JSON format emits `PROGRAM_STATUS` events.
 - Asciicast format records `"m"` markers. With `fail_on_blocked`, the recording ends at the blocked marker with no exit line.
-- The completion log includes a `program_status` summary of the last state per ID (`id=state`, root shown as `-`).
+- The completion log includes a `program_status` summary of the last state per ID (`id=state`, root shown as `-`) and `status_time`, the time spent `working`, `blocked` and `idle` (for example `working=12.3s blocked=4.1s idle=200ms`; zero entries omitted).
 - When the runner's stderr is a terminal, each report is re-emitted there as OSC 7501, grouped under the run id: `status_id` (default `<command>-xxxx`) prefixes ids (`build` becomes `<id>/build`, the root becomes `<id>`).
 - The runner also relays its own run record under the run id: `working` at start, then `done` or `error` (with the exit code) at end, which persists in the terminal after exit.
 - Text output strips OSC 7501 sequences from `[OUTPUT]` lines when `program_status` is on; JSON and asciicast keep the raw bytes.

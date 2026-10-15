@@ -253,8 +253,14 @@ func (cp *ContainerProcess) ExecuteAndStream(ctx context.Context) iter.Seq2[Even
 		// 7. Stream output until the container exits
 		endTime, ok, waitErr := streamOutput(ctx, yield, w, flush, done, processStart, cp.flushInterval, cp.heartbeatInterval, cp.maxBufferSize, cp.stats)
 		if !ok {
+			if cp.stats != nil {
+				cp.stats.CloseStatus(ctx, time.Now()) // cancel or consumer break
+			}
 			stop()
 			return
+		}
+		if cp.stats != nil {
+			cp.stats.CloseStatus(ctx, endTime) // covers the wait-error and log-error paths too
 		}
 
 		exit, isExit := waitErr.(*containerExit)

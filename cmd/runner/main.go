@@ -486,6 +486,10 @@ func formatOutput(events iter.Seq2[consolestream.Event, error], format, outputPa
 		if summary := tracker.summary(); summary != "" {
 			attrs = append(attrs, "program_status", summary)
 		}
+		tracker.timer.Close(time.Now()) // fail-fast stop counts as time in the last state
+		if st := tracker.timeSummary(); st != "" {
+			attrs = append(attrs, "status_time", st)
+		}
 	}
 	logger.Info("Execution completed", attrs...)
 

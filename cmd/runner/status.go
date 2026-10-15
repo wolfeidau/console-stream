@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	consolestream "github.com/wolfeidau/console-stream"
 	"github.com/wolfeidau/osc7501"
@@ -39,6 +40,23 @@ func statusLine(s *consolestream.ProgramStatus) string {
 // statusTracker keeps the last state[/kind] reported per ID.
 type statusTracker struct {
 	states map[string]string
+	timer  consolestream.StatusTimer
+}
+
+// timeSummary renders non-zero time per state as working=12.3s blocked=4.1s
+// idle=200ms, rounded to 100ms; "" if none.
+func (t *statusTracker) timeSummary() string {
+	tot := t.timer.Totals()
+	var parts []string
+	for _, e := range []struct {
+		name string
+		d    time.Duration
+	}{{"working", tot.Working}, {"blocked", tot.Blocked}, {"idle", tot.Idle}} {
+		if r := e.d.Round(100 * time.Millisecond); r > 0 {
+			parts = append(parts, e.name+"="+r.String())
+		}
+	}
+	return strings.Join(parts, " ")
 }
 
 func newStatusTracker() *statusTracker {
@@ -180,6 +198,7 @@ func wrapProgramStatus(events iter.Seq2[consolestream.Event, error], failOnBlock
 				continue
 			}
 			relaying := rl.active()
+			tracker.timer.Observe(event)
 			switch e := event.Event.(type) {
 			case *consolestream.ProgramStatus:
 				tracker.apply(e)

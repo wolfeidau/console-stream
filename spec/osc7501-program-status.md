@@ -82,7 +82,7 @@ Many programs emit OSC only when stdout is a TTY, so PTY mode sees the most traf
 - **v1:** `github.com/wolfeidau/osc7501` parser/scanner, the `ProgramStatus` event and wiring for all modes (pipe, PTY and container share `BufferWriter`), and asciicast markers. The parser/scanner lands first as its own PR.
 - **Query reply:** PTY mode answers the feature query.
 - **Runner:** rendering, summary, fail-fast and re-emit.
-- **Later:** metrics.
+- **Telemetry** (done): `StatusTimer` measures wall-clock time per state (blocked > working > idle across ids); exposed as `process.program_status.duration{state}` with `WithMeter`, `GetStats().StatusTime`, and `status_time` in the runner completion log.
 
 ## Effort
 - `github.com/wolfeidau/osc7501` package: about 300 LOC, plus about 300 LOC of table and fuzz tests.

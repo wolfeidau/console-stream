@@ -32,6 +32,9 @@ type ProcessStatsSnapshot struct {
 	ErrorCount int
 	ExitCode   *int
 	Duration   time.Duration
+
+	// StatusTime is wall-clock time per program status state.
+	StatusTime StatusDurations
 }
 
 // ProcessStats manages comprehensive metrics during process execution
@@ -47,6 +50,10 @@ type ProcessStats struct {
 	outputBytesHistogram metric.Int64Histogram
 	eventCounter         metric.Int64Counter
 	processStatusGauge   metric.Int64Gauge
+	statusDuration       metric.Float64Counter
+
+	// statusTimer accumulates program status time; guarded by mutex.
+	statusTimer StatusTimer
 
 	// Configuration
 	processInfo ProcessInfo
@@ -313,6 +320,9 @@ func (p *Process) run(ctx context.Context, yield func(Event, error) bool) {
 
 	endTime, ok, waitErr := streamOutput(ctx, yield, w, flush, done, processStart, p.flushInterval, p.heartbeatInterval, p.maxBufferSize, p.stats)
 	if !ok {
+		if p.stats != nil {
+			p.stats.CloseStatus(ctx, time.Now()) // cancel or consumer break
+		}
 		stop()
 		return
 	}
@@ -369,7 +379,57 @@ func NewProcessStats(meter metric.Meter, processInfo ProcessInfo) (*ProcessStats
 		return nil, fmt.Errorf("failed to create process status gauge: %w", err)
 	}
 
+	stats.statusDuration, err = meter.Float64Counter(
+		"process.program_status.duration",
+		metric.WithDescription("Wall-clock seconds per program status state; blocked > working > idle when ids overlap"),
+		metric.WithUnit("s"),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create program status duration counter: %w", err)
+	}
+
 	return stats, nil
+}
+
+type statusAccrual struct {
+	state string
+	d     time.Duration
+}
+
+// withStatusTimer runs fn on the timer under the lock, then records the
+// accrued intervals to the duration counter outside it.
+func (s *ProcessStats) withStatusTimer(ctx context.Context, fn func(*StatusTimer)) {
+	var accruals []statusAccrual
+	s.mutex.Lock()
+	s.statusTimer.onAccrue = func(state string, d time.Duration) {
+		accruals = append(accruals, statusAccrual{state, d})
+	}
+	fn(&s.statusTimer)
+	s.statusTimer.onAccrue = nil
+	s.mutex.Unlock()
+
+	if s.statusDuration == nil {
+		return
+	}
+	for _, a := range accruals {
+		s.statusDuration.Add(ctx, a.d.Seconds(),
+			metric.WithAttributes(
+				attribute.String("state", a.state),
+				attribute.String("command", s.processInfo.Command),
+				attribute.Int("pid", s.processInfo.PID),
+			),
+		)
+	}
+}
+
+// ObserveStatus feeds an event to the program status timer.
+func (s *ProcessStats) ObserveStatus(ctx context.Context, ev Event) {
+	s.withStatusTimer(ctx, func(t *StatusTimer) { t.Observe(ev) })
+}
+
+// CloseStatus stops the program status timer at the given time; idempotent.
+func (s *ProcessStats) CloseStatus(ctx context.Context, at time.Time) {
+	s.withStatusTimer(ctx, func(t *StatusTimer) { t.Close(at) })
 }
 
 // Start initializes the stats and records process start
@@ -490,6 +550,7 @@ func (s *ProcessStats) GetSnapshot() ProcessStatsSnapshot {
 		ErrorCount: s.errorCount,
 		ExitCode:   s.exitCode,
 		Duration:   s.duration,
+		StatusTime: s.statusTimer.Totals(),
 	}
 
 	return snapshot
