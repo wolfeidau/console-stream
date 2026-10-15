@@ -16,7 +16,7 @@ import (
 
 	"github.com/creack/pty"
 	consolestream "github.com/wolfeidau/console-stream"
-	"github.com/wolfeidau/console-stream/internal/osc7501"
+	"github.com/wolfeidau/osc7501"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"gopkg.in/yaml.v3"
 )
