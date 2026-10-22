@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -121,10 +120,7 @@ func TestWrapProgramStatusFailFast(t *testing.T) {
 	)
 	wrapped, blocked := wrapProgramStatus(events, true, newStatusTracker(), nil)
 
-	var got []consolestream.Event
-	for e := range wrapped {
-		got = append(got, e)
-	}
+	got := collect(t, wrapped)
 	require.Len(t, got, 3)
 	_, isStatus := got[2].Event.(*consolestream.ProgramStatus)
 	require.True(t, isStatus)
@@ -137,18 +133,18 @@ func TestWrapProgramStatusNoFailFast(t *testing.T) {
 		ev(&consolestream.ProcessEnd{}),
 	)
 	wrapped, blocked := wrapProgramStatus(events, false, newStatusTracker(), nil)
-	require.Len(t, slices.Collect(firstOf(wrapped)), 2)
+	require.Len(t, collect(t, wrapped), 2)
 	require.NoError(t, blocked())
 }
 
-func firstOf(s iter.Seq2[consolestream.Event, error]) iter.Seq[consolestream.Event] {
-	return func(yield func(consolestream.Event) bool) {
-		for e := range s {
-			if !yield(e) {
-				return
-			}
-		}
+func collect(t *testing.T, s iter.Seq2[consolestream.Event, error]) []consolestream.Event {
+	t.Helper()
+	var got []consolestream.Event
+	for e, err := range s {
+		require.NoError(t, err)
+		got = append(got, e)
 	}
+	return got
 }
 
 func runRelay(t *testing.T, failFast bool, tracker *statusTracker, events ...consolestream.Event) (*bytes.Buffer, func() error) {
@@ -156,7 +152,8 @@ func runRelay(t *testing.T, failFast bool, tracker *statusTracker, events ...con
 	var out bytes.Buffer
 	rl := &relay{w: &out, runID: "run-1", title: "make all"}
 	wrapped, blocked := wrapProgramStatus(seq(events...), failFast, tracker, rl)
-	for range wrapped {
+	for _, err := range wrapped {
+		require.NoError(t, err)
 	}
 	return &out, blocked
 }
@@ -226,9 +223,9 @@ func TestRelayFailFast(t *testing.T) {
 
 func TestNilRelay(t *testing.T) {
 	wrapped, _ := wrapProgramStatus(seq(ev(&consolestream.ProcessStart{}), ev(ps("done", "", "", "", -1))), false, newStatusTracker(), nil)
-	require.Len(t, slices.Collect(firstOf(wrapped)), 2)
+	require.Len(t, collect(t, wrapped), 2)
 	wrapped, _ = wrapProgramStatus(seq(ev(&consolestream.ProcessStart{})), false, newStatusTracker(), &relay{runID: "x"})
-	require.Len(t, slices.Collect(firstOf(wrapped)), 1)
+	require.Len(t, collect(t, wrapped), 1)
 }
 
 func TestFormatTextOutputStrip(t *testing.T) {
