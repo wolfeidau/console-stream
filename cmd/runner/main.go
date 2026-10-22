@@ -506,7 +506,7 @@ func formatTextOutput(events iter.Seq2[consolestream.Event, error], writer io.Wr
 	var stripper osc7501.Stripper
 	lastTS := time.Time{}
 	writeOutput := func(ts time.Time, data []byte) {
-		fmt.Fprintf(writer, "[OUTPUT] %s: %s", ts.Format("15:04:05"), string(data))
+		fmt.Fprintf(writer, "[OUTPUT] %s: %s", ts.Format("15:04:05"), data)
 		if len(data) > 0 {
 			lineEnded = data[len(data)-1] == '\n'
 		}
