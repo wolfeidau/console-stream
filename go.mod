@@ -5,8 +5,8 @@ go 1.26.0
 require (
 	github.com/containerd/errdefs v1.0.0
 	github.com/creack/pty v1.1.24
-	github.com/moby/moby/api v1.56.1
-	github.com/moby/moby/client v0.6.2
+	github.com/moby/moby/api v1.57.0
+	github.com/moby/moby/client v0.6.3
 	github.com/stretchr/testify v1.12.1
 	github.com/wolfeidau/osc7501 v0.2.1
 	go.opentelemetry.io/otel v1.47.0
